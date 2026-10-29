@@ -1,0 +1,631 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paddle Duel — Pixel Acre Arcade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=DotGothic16&family=Instrument+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="common.css">
+<style>
+  .pa-hint { opacity: 0; }
+  .pa-hint.show { opacity: 1; }
+  .pd-touch .pa-hint { bottom: calc(122px + env(safe-area-inset-bottom, 0px)); }
+  .pd-note { font-size: 13px !important; margin-top: -6px !important; }
+  .pd-jp { font-family: var(--font-pixel); color: var(--marigold); }
+  @media (max-width: 480px) {
+    .pa-title { display: none; }
+    .pa-bar { gap: 6px; padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); }
+    .pa-bar .pa-chip { padding: 0 10px; font-size: 12px; white-space: nowrap; }
+    .pa-bar .pa-score { font-size: 13px; }
+  }
+</style>
+<script type="importmap">{"imports":{"three":"../lib/three.module.min.js"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from "three";
+import { PA } from "./common.js";
+
+/* ------------------------------------------------------------ constants */
+const V3 = THREE.Vector3;
+const HL = 1.37, HW = 0.7625, TOP = 0.76, NET = 0.1525; // table half-length, half-width, height, net height
+const R = 0.034;                  // ball radius (arcade-sized)
+const G = 6.6;                    // softened gravity for readable rallies
+const ZP = 1.62, ZC = -1.62;      // player / CPU paddle planes
+const WIN = 5;
+const KS = 1.0, KT = 1.3;         // spin -> acceleration
+const DIFF = {
+  easy:   { label: "Easy",   T: 1.05, cpuSpeed: 1.7, react: 0.32, err: 0.2,  noise: 0.11, hitR: 0.36, cpuR: 0.2,  guide: true },
+  normal: { label: "Normal", T: 0.9,  cpuSpeed: 2.5, react: 0.2,  err: 0.11, noise: 0.05, hitR: 0.3,  cpuR: 0.22, guide: true },
+  hard:   { label: "Hard",   T: 0.76, cpuSpeed: 3.4, react: 0.12, err: 0.05, noise: 0.025, hitR: 0.26, cpuR: 0.24, guide: false },
+};
+const LINES = {
+  cpuScores: [["やった！", "Yes!"], ["どうだ！", "How's that!"], ["いいね！", "Nice one!"]],
+  cpuLoses:  [["くそー！", "Oh no!"], ["うわっ！", "Whoa!"], ["やるね！", "You're good!"]],
+};
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = THREE.MathUtils.clamp;
+const pick = (a) => a[(Math.random() * a.length) | 0];
+
+/* ------------------------------------------------------------ renderer + scene */
+const renderer = await PA.renderer(THREE, { clear: 0x2a2147 });
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x9a6478, 16, 95);
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.05, 400);
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.85, metalness: 0, ...o });
+function add(geo, mat, x = 0, y = 0, z = 0, parent = scene, shadow = true) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = shadow; m.receiveShadow = true; parent.add(m); return m;
+}
+// value noise for terrain
+function hash(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); }
+function vnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+/* ---- sky dome with sunset gradient (vertex colors) ---- */
+const sunDir = new V3(0.62, 0.17, -0.77).normalize();
+{
+  const g = new THREE.SphereGeometry(200, 40, 20), pos = g.attributes.position;
+  const stops = [[-0.3, "#3a2f5e"], [0, "#ffb36e"], [0.07, "#ff9a78"], [0.2, "#f27c8c"], [0.42, "#7b4f95"], [1, "#2a2147"]].map(([t, c]) => [t, new THREE.Color(c)]);
+  const sunC = new THREE.Color("#ffe0a0"), c = new THREE.Color(), p = new V3(), cols = [];
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i).normalize();
+    let k = 0; while (k < stops.length - 2 && p.y > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k], [t1, c1] = stops[k + 1];
+    c.copy(c0).lerp(c1, clamp((p.y - t0) / (t1 - t0), 0, 1));
+    c.lerp(sunC, Math.pow(Math.max(0, p.dot(sunDir)), 10) * 0.85);
+    cols.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false })));
+  const sun = new THREE.Mesh(new THREE.CircleGeometry(9, 32), new THREE.MeshBasicMaterial({ color: 0xfff0c4, fog: false }));
+  sun.position.copy(sunDir).multiplyScalar(185); sun.lookAt(0, 0, 0); scene.add(sun);
+}
+
+/* ---- canvas textures ---- */
+function glowTex() {
+  const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d");
+  const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, "rgba(255,230,170,1)"); gr.addColorStop(0.3, "rgba(255,190,110,.45)"); gr.addColorStop(1, "rgba(255,160,80,0)");
+  x.fillStyle = gr; x.fillRect(0, 0, 64, 64); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function netTex() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 64; const x = c.getContext("2d");
+  x.strokeStyle = "rgba(240,240,250,.85)"; x.lineWidth = 2;
+  for (let i = 0; i <= 512; i += 10) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 64); x.stroke(); }
+  for (let j = 0; j <= 64; j += 10) { x.beginPath(); x.moveTo(0, j); x.lineTo(512, j); x.stroke(); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const GLOW = glowTex();
+
+/* ---- lights ---- */
+scene.add(new THREE.HemisphereLight(0xb9a6ff, 0x5a3a2a, 1.0));
+const sunLight = new THREE.DirectionalLight(0xffb36b, 2.8);
+sunLight.position.copy(sunDir).multiplyScalar(12); sunLight.castShadow = true;
+Object.assign(sunLight.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
+sunLight.shadow.mapSize.set(2048, 2048); sunLight.shadow.bias = -0.0004; sunLight.shadow.normalBias = 0.02;
+scene.add(sunLight);
+for (const [x, z] of [[-1.4, -1.3], [1.4, 1.4]]) { const l = new THREE.PointLight(0xffc27a, 2.2, 7, 1.6); l.position.set(x, 2.3, z); scene.add(l); }
+
+/* ---- far landscape: rolling fields & hills ---- */
+{
+  const g = new THREE.PlaneGeometry(260, 260, 70, 70).toNonIndexed(); g.rotateX(-Math.PI / 2);
+  const pos = g.attributes.position, cols = [], c = new THREE.Color();
+  const field = ["#c9a14a", "#8fae4c", "#6f9a4a", "#d7b65e", "#a0794a", "#7fa864"].map((h) => new THREE.Color(h));
+  const H = (x, z) => { const d = Math.hypot(x, z); const k = THREE.MathUtils.smoothstep(d, 10, 90); return -0.5 + k * (vnoise(x * 0.04, z * 0.04) * 14 + vnoise(x * 0.12, z * 0.12) * 3); };
+  for (let i = 0; i < pos.count; i++) pos.setY(i, H(pos.getX(i), pos.getZ(i)));
+  for (let i = 0; i < pos.count; i += 3) {
+    const cx = (pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2)) / 3, cz = (pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)) / 3;
+    const cy = (pos.getY(i) + pos.getY(i + 1) + pos.getY(i + 2)) / 3;
+    c.copy(field[Math.floor(hash(Math.floor(cx / 11), Math.floor(cz / 8)) * field.length)]);
+    if (cy > 7) c.lerp(new THREE.Color("#5d7a52"), 0.6);
+    c.offsetHSL(0, 0, (hash(cx, cz) - 0.5) * 0.04);
+    for (let k = 0; k < 3; k++) cols.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3)); g.computeVertexNormals();
+  const ground = new THREE.Mesh(g, std(0xffffff, { vertexColors: true })); ground.receiveShadow = true; scene.add(ground);
+  // trees dotted on the hills
+  const tree = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 2.6, 6), std(0xffffff), 70);
+  const m = new THREE.Matrix4(), tc = new THREE.Color();
+  for (let i = 0; i < 70; i++) {
+    const a = rand(-2.6, -0.5) + (i % 2 ? Math.PI : 0) * 0, d = rand(16, 70);
+    const x = Math.cos(a) * d * 1.4, z = Math.sin(a) * d, s = rand(0.7, 1.6);
+    m.makeScale(s, s * rand(0.9, 1.4), s).setPosition(x, H(x, z) + 1.2 * s, z); tree.setMatrixAt(i, m);
+    tree.setColorAt(i, tc.set(pick(["#5a8a5e", "#6b9656", "#4f7a5c", "#7a9a58"])));
+  }
+  tree.castShadow = true; scene.add(tree);
+}
+
+/* ---- porch deck, barn, fence, hay ---- */
+{
+  // planks
+  const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.19, 0.12, 1), std(0xffffff, { roughness: 0.95 }), 260);
+  const m = new THREE.Matrix4(), c = new THREE.Color(); let n = 0;
+  for (let x = -3.2; x < 3.45 && n < 260; x += 0.2) {
+    let z = -4.3 + rand(-0.8, 0);
+    while (z < 4.3 && n < 260) {
+      const len = Math.min(rand(1.4, 2.8), 4.3 - z); if (len < 0.2) break;
+      m.makeScale(1, 1, len - 0.02).setPosition(x, -0.06, z + len / 2); planks.setMatrixAt(n, m);
+      planks.setColorAt(n++, c.set(pick(["#8a5a3c", "#9c6a45", "#7d4f35", "#a57450"])));
+      z += len;
+    }
+  }
+  planks.count = n; planks.receiveShadow = true; scene.add(planks);
+  add(new THREE.BoxGeometry(6.8, 0.4, 8.8), std(0x5e3b2c), 0.12, -0.32, 0); // deck skirt
+
+  // barn on the left
+  const red = std(0xb5473f), white = std(0xf1e6d6), roof = std(0x4d3550);
+  add(new THREE.BoxGeometry(5, 4.2, 10), red, -5.75, 2.0, -0.6);
+  const sh = new THREE.Shape(); sh.moveTo(-2.9, 0); sh.lineTo(0, 2.3); sh.lineTo(2.9, 0); sh.lineTo(-2.9, 0);
+  const rg = new THREE.ExtrudeGeometry(sh, { depth: 10.6, bevelEnabled: false }); rg.translate(0, 0, -5.3);
+  add(rg, roof, -5.75, 4.1, -0.6);
+  add(new THREE.BoxGeometry(0.08, 3.1, 2.6), std(0x6e2a2c), -3.24, 1.55, -0.6, scene, false); // door
+  for (const s of [1, -1]) { const b = add(new THREE.BoxGeometry(0.1, 3.9, 0.14), white, -3.2, 1.55, -0.6, scene, false); b.rotation.x = s * 0.68; }
+  for (const z of [-1.9, 0.7]) add(new THREE.BoxGeometry(0.1, 3.1, 0.14), white, -3.2, 1.55, z, scene, false);
+  add(new THREE.BoxGeometry(0.1, 0.14, 2.74), white, -3.2, 3.1, -0.6, scene, false);
+  const lantern = add(new THREE.BoxGeometry(0.16, 0.24, 0.16), new THREE.MeshBasicMaterial({ color: 0xffd38a }), -3.12, 2.6, 1.4, scene, false);
+  const ll = new THREE.PointLight(0xffb867, 1.6, 5, 1.5); ll.position.copy(lantern.position).add(new V3(0.4, 0, 0)); scene.add(ll);
+
+  // posts, rails and fence on the open sides
+  const wood = std(0x6b4630), rail = std(0x8a6040);
+  const posts = [[3.3, -4.1], [3.3, -1.4], [3.3, 1.4], [3.3, 4.1], [-3.0, -4.1], [-3.0, 4.1]];
+  for (const [x, z] of posts) add(new THREE.BoxGeometry(0.14, 2.9, 0.14), wood, x, 1.4, z);
+  for (const y of [0.45, 0.9]) {
+    add(new THREE.BoxGeometry(0.07, 0.09, 8.2), rail, 3.3, y, 0);
+    add(new THREE.BoxGeometry(6.3, 0.09, 0.07), rail, 0.15, y, -4.1);
+  }
+  for (let x = -2.8; x < 3.3; x += 0.45) add(new THREE.BoxGeometry(0.08, 1.05, 0.05), rail, x, 0.5, -4.12);
+  for (let z = -3.8; z < 4.1; z += 0.45) add(new THREE.BoxGeometry(0.05, 1.05, 0.08), rail, 3.32, 0.5, z);
+  add(new THREE.BoxGeometry(0.12, 0.12, 8.4), wood, 3.3, 2.82, 0); // top beam
+  add(new THREE.BoxGeometry(6.4, 0.12, 0.12), wood, 0.15, 2.82, -4.1);
+
+  // hay bales (round + square) and pumpkins
+  const hay = std(0xe0b456, { roughness: 1 }), hay2 = std(0xc99a3e, { roughness: 1 });
+  for (const [x, z, r] of [[-2.4, -3.4, 0.2], [-1.4, -3.55, -0.3], [2.6, 3.4, 1.2]]) {
+    const b = add(new THREE.CylinderGeometry(0.55, 0.55, 0.9, 10), hay, x, 0.55, z); b.rotation.set(0, r, Math.PI / 2);
+    add(new THREE.CylinderGeometry(0.4, 0.4, 0.92, 10), hay2, 0, 0, 0, b, false);
+  }
+  for (const [x, y, z, r] of [[2.5, 0.25, -3.4, 0.1], [2.5, 0.25, -2.6, -0.05], [2.5, 0.75, -3.0, 0.2], [-2.55, 0.25, 2.4, 1.5]])
+    { const b = add(new THREE.BoxGeometry(0.9, 0.5, 0.6), hay, x, y, z); b.rotation.y = r; }
+  for (const [x, z, s] of [[-2.6, 3.4, 0.28], [-2.15, 3.6, 0.2], [1.9, -3.6, 0.24]]) {
+    const p = add(new THREE.SphereGeometry(s, 10, 7), std(0xe8742c), x, s * 0.8, z); p.scale.y = 0.75;
+    add(new THREE.CylinderGeometry(0.03, 0.04, 0.12, 5), std(0x4c6b34), 0, s * 0.95, 0, p, false);
+  }
+}
+
+/* ---- string lights: catenary strands with glowing bulbs ---- */
+{
+  const strands = [
+    [[3.3, 2.8, -4.1], [-3.0, 2.8, -4.1], 0.35], [[3.3, 2.8, -4.1], [-3.0, 2.8, 4.1], 0.6],
+    [[-3.0, 2.8, -4.1], [3.3, 2.8, 1.4], 0.55], [[3.3, 2.8, -4.1], [3.3, 2.8, 4.1], 0.4],
+    [[-3.0, 2.8, -4.1], [-3.0, 2.8, 4.1], 0.4],
+  ];
+  const bulbs = [], wire = new THREE.LineBasicMaterial({ color: 0x2b2030 });
+  for (const [a, b, sag] of strands) {
+    const A = new V3(...a), B = new V3(...b), pts = [];
+    for (let i = 0; i <= 30; i++) { const t = i / 30, p = A.clone().lerp(B, t); p.y -= sag * 4 * t * (1 - t); pts.push(p); if (i % 2 && i < 30) bulbs.push(p.clone().add(new V3(0, -0.05, 0))); }
+    scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), wire));
+  }
+  const im = new THREE.InstancedMesh(new THREE.SphereGeometry(0.04, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }), bulbs.length);
+  const m = new THREE.Matrix4(), c = new THREE.Color();
+  bulbs.forEach((p, i) => { im.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)); im.setColorAt(i, c.set(pick(["#ffe2a0", "#ffd07a", "#ffc7a6"]))); });
+  scene.add(im);
+  const pg = new THREE.BufferGeometry().setFromPoints(bulbs);
+  scene.add(new THREE.Points(pg, new THREE.PointsMaterial({ map: GLOW, size: 0.45, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0xffd9a0 })));
+}
+
+/* ---- table ---- */
+{
+  const top = std(0x2c6a72, { roughness: 0.55 }), line = std(0xf4f0e8, { roughness: 0.6 }), dark = std(0x2a2232);
+  add(new THREE.BoxGeometry(HW * 2, 0.04, HL * 2), top, 0, TOP - 0.02, 0);
+  for (const s of [-1, 1]) {
+    add(new THREE.BoxGeometry(0.02, 0.003, HL * 2), line, s * (HW - 0.01), TOP + 0.001, 0, scene, false);
+    add(new THREE.BoxGeometry(HW * 2, 0.003, 0.02), line, 0, TOP + 0.001, s * (HL - 0.01), scene, false);
+  }
+  add(new THREE.BoxGeometry(0.006, 0.003, HL * 2), line, 0, TOP + 0.001, 0, scene, false);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(new THREE.BoxGeometry(0.06, TOP - 0.04, 0.06), dark, sx * (HW - 0.12), (TOP - 0.04) / 2, sz * (HL - 0.25));
+  add(new THREE.BoxGeometry(HW * 1.7, 0.05, 0.05), dark, 0, 0.3, 0);
+  // net
+  const net = add(new THREE.PlaneGeometry(HW * 2 + 0.3, NET), new THREE.MeshBasicMaterial({ map: netTex(), transparent: true, side: THREE.DoubleSide, depthWrite: false, color: 0xdddde8 }), 0, TOP + NET / 2, 0, scene, false);
+  net.renderOrder = 2;
+  add(new THREE.BoxGeometry(HW * 2 + 0.3, 0.018, 0.012), line, 0, TOP + NET, 0, scene, false);
+  for (const s of [-1, 1]) add(new THREE.CylinderGeometry(0.012, 0.012, NET + 0.03, 6), dark, s * (HW + 0.15), TOP + NET / 2, 0);
+}
+
+/* ---- paddles, ball, helpers ---- */
+function makePaddle(color) {
+  const g = new THREE.Group();
+  const blade = add(new THREE.CylinderGeometry(0.16, 0.16, 0.024, 28), std(color, { roughness: 0.6 }), 0, 0, 0, g);
+  blade.rotation.x = Math.PI / 2;
+  const rim = add(new THREE.TorusGeometry(0.16, 0.012, 6, 28), std(0x6b4630), 0, 0, 0, g); rim.rotation.y = 0;
+  add(new THREE.BoxGeometry(0.05, 0.15, 0.035), std(0x9c6a45), 0, -0.22, 0, g);
+  scene.add(g); return g;
+}
+const pPad = makePaddle(0xe2504a), cPad = makePaddle(0x4fa3c7);
+pPad.traverse((o) => { if (o.material) { o.material = o.material.clone(); o.material.transparent = true; o.material.opacity = 0.72; o.material.emissive = new THREE.Color(0x40201c); } });
+const ballMesh = add(new THREE.SphereGeometry(R, 16, 12), new THREE.MeshStandardMaterial({ color: 0xfff4e0, emissive: 0xffb36b, emissiveIntensity: 0.35, roughness: 0.4 }));
+const shadowMat = new THREE.MeshBasicMaterial({ color: 0x120c1e, transparent: true, opacity: 0.4, depthWrite: false });
+const ballShadow = add(new THREE.CircleGeometry(R * 1.3, 20), shadowMat, 0, 0, 0, scene, false);
+ballShadow.rotation.x = -Math.PI / 2; ballShadow.renderOrder = 1;
+const trail = Array.from({ length: 7 }, (_, i) => { const m = add(new THREE.SphereGeometry(R * (0.85 - i * 0.09), 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.32 - i * 0.04, depthWrite: false }), 0, 0, 0, scene, false); return m; });
+const trailPts = [];
+const guide = add(new THREE.RingGeometry(0.075, 0.1, 28), new THREE.MeshBasicMaterial({ color: 0xf4a63a, transparent: true, opacity: 0.75, depthTest: false }), 0, 0, ZP, scene, false);
+guide.renderOrder = 5; guide.visible = false;
+
+/* ---- Patch the scarecrow (CPU) ---- */
+const patch = (() => {
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body); scene.add(root);
+  const burlap = std(0xc9a26b), straw = std(0xe8c35a), denim = std(0x4a5f9e), ink = std(0x2a1606);
+  add(new THREE.CylinderGeometry(0.04, 0.05, 0.9, 6), std(0x6b4630), 0, 0.45, 0, root); // pole
+  const torso = add(new THREE.SphereGeometry(0.33, 12, 9), burlap, 0, 1.1, 0, body); torso.scale.set(1, 1.08, 0.9);
+  const pants = add(new THREE.SphereGeometry(0.34, 12, 9, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48), denim, 0, 1.1, 0, body); pants.scale.set(1, 1.08, 0.92);
+  add(new THREE.BoxGeometry(0.16, 0.14, 0.04), std(0xf27c8c), 0.1, 1.02, 0.3, body).rotation.z = 0.2; // patch
+  for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.05, 0.36, 0.03), denim, s * 0.14, 1.18, 0.27, body).rotation.x = -0.35;
+  const head = new THREE.Group(); head.position.set(0, 1.56, 0); body.add(head);
+  add(new THREE.SphereGeometry(0.2, 12, 9), std(0xe3c38c), 0, 0, 0, head);
+  const eyes = [];
+  for (const s of [-1, 1]) {
+    const e = add(new THREE.CylinderGeometry(0.035, 0.035, 0.02, 10), ink, s * 0.075, 0.03, 0.185, head, false); e.rotation.x = Math.PI / 2; eyes.push(e);
+    add(new THREE.SphereGeometry(0.03, 8, 6), std(0xf27c8c), s * 0.12, -0.04, 0.165, head, false);
+  }
+  const mouth = add(new THREE.TorusGeometry(0.07, 0.008, 4, 12, Math.PI), ink, 0, -0.03, 0.18, head, false); mouth.rotation.z = Math.PI;
+  const hat = new THREE.Group(); hat.position.set(0, 0.13, 0); head.add(hat);
+  add(new THREE.CylinderGeometry(0.38, 0.4, 0.03, 14), straw, 0, 0, 0, hat);
+  add(new THREE.CylinderGeometry(0.15, 0.2, 0.2, 10), straw, 0, 0.11, 0, hat);
+  add(new THREE.CylinderGeometry(0.205, 0.205, 0.045, 10), std(0xf27c8c), 0, 0.04, 0, hat, false);
+  for (let i = 0; i < 7; i++) { const a = (i / 7) * Math.PI * 2; const t = add(new THREE.ConeGeometry(0.03, 0.14, 4), straw, Math.cos(a) * 0.22, 0.3, Math.sin(a) * 0.2, body, false); t.rotation.set(Math.sin(a) * 1.2, 0, -Math.cos(a) * 1.2); }
+  const armMat = burlap;
+  const armR = add(new THREE.CylinderGeometry(0.05, 0.045, 1, 6), armMat, 0, 0, 0, root);
+  const armL = add(new THREE.CylinderGeometry(0.05, 0.045, 0.5, 6), armMat, 0.42, 1.25, 0, body); armL.rotation.z = 1.0;
+  for (let i = 0; i < 3; i++) { const t = add(new THREE.ConeGeometry(0.025, 0.14, 4), straw, 0.64, 1.36 + i * 0.02, -0.03 + i * 0.03, body, false); t.rotation.z = -0.9 + i * 0.3; }
+  return { root, body, head, hat, eyes, armR, mood: 0, moodT: 0, jump: 0 };
+})();
+
+/* ---- string bulbs, scene done; HUD ---- */
+const bar = PA.topBar({ title: "Paddle Duel", scoreLabel: "You 0 – 0 CPU" });
+document.body.classList.toggle("pd-touch", PA.TOUCH);
+const hint = document.createElement("div"); hint.className = "pa-hint"; document.body.appendChild(hint);
+PA.touchControls({ stick: false, buttons: [{ label: "Serve", code: "Space" }] });
+
+/* ------------------------------------------------------------ game state */
+const S = {
+  diff: PA.store.get("paddle:diff", "normal"), mode: "menu", phase: "serve",
+  you: 0, cpu: 0, server: "P", hitter: "P", bounced: 0, netted: false, timer: 0, serveReq: false,
+  cpuPlan: null, cpuTimer: 0, guideAt: null, lastHitT: 0, spinToastT: 0, rallyLen: 0,
+};
+const D = () => DIFF[S.diff];
+const ball = { p: new V3(0, 1, ZP - 0.1), v: new V3(), side: 0, top: 0 };
+const aim = new THREE.Vector2(0, 1.05), pv = new THREE.Vector2(), cpuPos = new V3(0, 1.05, ZC);
+const prevPad = new THREE.Vector2(0, 1.05);
+
+/* ------------------------------------------------------------ ball physics */
+// One integration step. Pushes {t:'net'|'table'|'floor', side} events.
+function stepBall(b, dt, ev) {
+  const pz = b.p.z, py = b.p.y;
+  b.v.x += b.side * KS * dt; b.v.y += (-G - b.top * KT) * dt;
+  b.p.addScaledVector(b.v, dt);
+  if (pz * b.p.z <= 0 && pz !== 0 && Math.abs(b.p.x) < HW + 0.15 && b.p.y - R < TOP + NET && b.p.y > TOP - 0.03) {
+    b.p.z = Math.sign(pz) * (R + 0.004); b.v.z *= -0.22; b.v.x *= 0.5; b.v.y = Math.min(b.v.y, 0) * 0.3;
+    ev && ev.push({ t: "net" });
+  }
+  if (b.v.y < 0 && b.p.y - R <= TOP && py - R >= TOP - 0.04 && Math.abs(b.p.x) <= HW + R * 0.5 && Math.abs(b.p.z) <= HL + R * 0.5) {
+    b.p.y = TOP + R; b.v.y = -b.v.y * 0.86;
+    b.v.z += Math.sign(b.v.z) * b.top * 0.12; b.v.x += b.side * 0.1;
+    b.side *= 0.5; b.top *= 0.4;
+    ev && ev.push({ t: "table", side: b.p.z > 0 ? "P" : "C" });
+  }
+  if (b.v.y < 0 && b.p.y - R <= 0) { b.p.y = R; b.v.y *= -0.55; b.v.x *= 0.8; b.v.z *= 0.8; b.side = b.top = 0; ev && ev.push({ t: "floor" }); }
+}
+// Aim a shot so it lands on (tx, tz) after time T, raising the arc until it clears the net.
+function shoot(tx, tz, T, side, top) {
+  const p = ball.p; ball.side = side; ball.top = top;
+  const ax = side * KS, ay = -G - top * KT, ty = TOP + R;
+  for (let i = 0; i < 24; i++, T += 0.05) {
+    ball.v.set((tx - p.x - 0.5 * ax * T * T) / T, (ty - p.y - 0.5 * ay * T * T) / T, (tz - p.z) / T);
+    const tn = -p.z / ball.v.z, yn = p.y + ball.v.y * tn + 0.5 * ay * tn * tn;
+    if (yn > TOP + NET + R + 0.05) break;
+  }
+}
+// Simulate ahead to where the ball crosses a paddle plane.
+const sim = { p: new V3(), v: new V3(), side: 0, top: 0 };
+function predictCross(zPlane) {
+  sim.p.copy(ball.p); sim.v.copy(ball.v); sim.side = ball.side; sim.top = ball.top;
+  const ev = []; let bounced = 0;
+  for (let i = 0; i < 900; i++) {
+    const pz = sim.p.z; ev.length = 0; stepBall(sim, 1 / 240, ev);
+    for (const e of ev) { if (e.t === "table") bounced++; if (e.t === "floor") return null; }
+    if ((pz - zPlane) * (sim.p.z - zPlane) <= 0) return { x: sim.p.x, y: sim.p.y, bounced, t: i / 240 };
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------ rules */
+const other = (w) => (w === "P" ? "C" : "P");
+function setScore() { bar.setScore(`You ${S.you} – ${S.cpu} CPU`); }
+function setHint(t) { hint.textContent = t || ""; hint.classList.toggle("show", !!t && !PA.THUMB); }
+
+function setupServe() {
+  const total = S.you + S.cpu;
+  S.server = Math.floor(total / 2) % 2 === 0 ? "P" : "C";
+  if (total % 2 === 0 && total > 0 && S.mode === "play") PA.toast(S.server === "P" ? "Your serve" : "Patch's serve", 1200);
+  S.phase = "serve"; S.timer = 0; S.serveReq = false; S.bounced = 0; S.netted = false; S.cpuPlan = null; S.rallyLen = 0;
+  ball.v.set(0, 0, 0); ball.side = ball.top = 0; trailPts.length = 0;
+  setHint(S.server === "P" ? (PA.TOUCH ? "Your serve — tap Serve" : "Your serve — click or press Space") : "Patch is serving…");
+}
+function playerServe() {
+  S.shotQ = 0; S.hitter = "P"; S.phase = "rally"; S.bounced = 0; S.lastHitT = 0; setHint("");
+  shoot(clamp(aim.x * 0.45 + pv.x * 0.15, -0.6, 0.6), -rand(0.85, 1.15), D().T * 1.12, clamp(pv.x * 0.5, -1, 1), 0.4);
+  PA.sfx("paddle"); planCpu();
+}
+function cpuServe() {
+  S.hitter = "C"; S.phase = "rally"; S.bounced = 0; setHint("");
+  shoot(rand(-0.5, 0.5), rand(0.8, 1.15), D().T * 1.12, rand(-0.6, 0.6), rand(0, 0.8));
+  PA.sfx("paddle"); S.guideAt = predictCross(ZP);
+}
+function playerHit() {
+  const d = D(), off = clamp((ball.p.x - pPad.position.x) / d.hitR, -1, 1);
+  const speed = pv.length();
+  const tx = clamp(off * 0.45 + pv.x * 0.16, -0.68, 0.68);
+  const tz = -clamp(0.8 + pv.y * 0.06 + rand(0, 0.25), 0.7, 1.22);
+  const side = clamp(pv.x * 0.7, -2.4, 2.4), top = clamp(pv.y * 1.1, -1.6, 3);
+  shoot(tx, tz, Math.max(0.6, d.T - clamp(speed * 0.05, 0, 0.2)), side, top);
+  S.hitter = "P"; S.bounced = 0; S.netted = false; S.rallyLen++; S.guideAt = null;
+  S.shotQ = Math.abs(side) * 0.5 + Math.max(0, top) * 0.3 + clamp(speed * 0.05, 0, 0.4); // harder for Patch to read
+  PA.sfx("paddle"); planCpu();
+  if (S.spinToastT <= 0 && !PA.THUMB) {
+    if (top > 2.2) { PA.toast("Topspin!", 900); S.spinToastT = 3; }
+    else if (Math.abs(side) > 1.6) { PA.toast("Curve shot!", 900); S.spinToastT = 3; }
+  }
+}
+function planCpu() { S.cpuPlan = null; S.cpuTimer = D().react; }
+function cpuHit() {
+  const d = D();
+  let tx = rand(-0.62, 0.62), tz = rand(0.75, 1.2);
+  if (S.diff === "hard" && Math.random() < 0.6) tx = -Math.sign(pPad.position.x || 1) * rand(0.3, 0.66);
+  if (!PA.THUMB && Math.random() < d.err) { if (Math.random() < 0.5) tx = Math.sign(tx || 1) * rand(0.84, 1.0); else tz = rand(1.48, 1.65); }
+  const sp = S.diff === "hard" ? 1.6 : 0.8;
+  shoot(tx, tz, d.T * rand(0.92, 1.08), rand(-sp, sp), rand(0, S.diff === "easy" ? 0.8 : 1.6));
+  S.hitter = "C"; S.bounced = 0; S.netted = false; S.rallyLen++;
+  PA.sfx("paddle"); S.guideAt = predictCross(ZP);
+}
+function award(who, reason) {
+  if (S.phase !== "rally") return;
+  S.phase = "point"; S.timer = 0; S.guideAt = null;
+  if (who === "P") S.you++; else S.cpu++;
+  setScore();
+  if (S.mode !== "play") return;
+  const over = S.you >= WIN || S.cpu >= WIN;
+  if (who === "P") { const [jp, en] = pick(LINES.cpuLoses); PA.sayJP(jp, { pitch: 1.2 }); PA.toast(`${reason} · Patch: “${en}”`); PA.sfx(over ? "win" : "coin"); patch.mood = -1; }
+  else { const [jp, en] = pick(LINES.cpuScores); PA.sayJP(jp, { pitch: 1.2 }); PA.toast(`${reason} · Patch: “${en}”`); PA.sfx(over ? "fail" : "bounce"); patch.mood = 1; patch.jump = 1; }
+  patch.moodT = 1.6;
+}
+function onEvent(e) {
+  if (e.t === "table" || e.t === "floor") PA.sfx(e.t === "table" ? "bounce" : "thud");
+  if (e.t === "net") { PA.sfx("thud"); S.netted = true; }
+  if (S.phase !== "rally") return;
+  const recv = other(S.hitter);
+  if (e.t === "table") {
+    if (e.side === S.hitter) award(recv, S.netted ? (S.hitter === "P" ? "Into the net" : "Patch hit the net") : "Fault");
+    else if (++S.bounced >= 2) award(S.hitter, S.hitter === "P" ? "Point!" : "Missed it");
+  } else if (e.t === "floor") {
+    if (S.bounced === 0) award(recv, S.netted ? "Net!" : (recv === "P" ? "Out — your point" : "Out!"));
+    else award(S.hitter, S.hitter === "P" ? "Point!" : "Missed it");
+  }
+}
+
+/* ------------------------------------------------------------ input */
+const ray = new THREE.Raycaster(), plane = new THREE.Plane(new V3(0, 0, 1), -ZP), ndc = new THREE.Vector2(), hitPt = new V3();
+function planePoint(e) {
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera); return ray.ray.intersectPlane(plane, hitPt) ? hitPt.clone() : null;
+}
+let drag = null;
+const canvas = renderer.domElement;
+canvas.addEventListener("pointerdown", (e) => {
+  if (S.mode !== "play" || PA.overlayOpen()) return;
+  if (S.phase === "serve" && S.server === "P") S.serveReq = true;
+  if (e.pointerType !== "mouse") { const p = planePoint(e); if (p) drag = { id: e.pointerId, a: aim.clone(), p }; }
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (S.mode !== "play") return;
+  const p = planePoint(e); if (!p) return;
+  if (e.pointerType === "mouse") aim.set(p.x, p.y);
+  else if (drag && drag.id === e.pointerId) aim.set(drag.a.x + (p.x - drag.p.x) * 1.6, drag.a.y + (p.y - drag.p.y) * 1.6);
+});
+const endDrag = (e) => { if (drag && drag.id === e.pointerId) drag = null; };
+canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
+addEventListener("keydown", (e) => {
+  if (e.code === "Escape" || e.code === "KeyP") { togglePause(); return; }
+  if (e.code === "Space" && S.mode === "play" && !PA.overlayOpen() && S.phase === "serve" && S.server === "P") S.serveReq = true;
+});
+
+/* ------------------------------------------------------------ flow / overlays */
+const game = PA.loop(update);
+function diffSeg() {
+  return `<div class="pa-seg" role="group" aria-label="Difficulty">${Object.entries(DIFF).map(([k, d]) =>
+    `<button data-d="${k}" aria-pressed="${k === S.diff}">${d.label}</button>`).join("")}</div>`;
+}
+const pickDiff = (e) => {
+  S.diff = e.currentTarget.dataset.d; PA.store.set("paddle:diff", S.diff);
+  document.querySelectorAll("[data-d]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.d === S.diff)));
+};
+function startMenu() {
+  S.mode = "menu"; game.pause();
+  PA.overlay(`<div class="pa-eyebrow">Sports · Table tennis</div>
+    <h1>Paddle Duel</h1>
+    <p>Out-rally Patch the scarecrow on the barn porch — first to ${WIN} points wins.</p>
+    ${diffSeg()}
+    <p class="pd-note">Easy and Normal show a ring where the ball will reach your paddle.</p>
+    <div class="pa-keys">
+      <kbd>Mouse</kbd><span>Move your paddle — swing while hitting for spin</span>
+      <kbd>Arrows / WASD</kbd><span>Move the paddle with keys</span>
+      <kbd>Click / Space</kbd><span>Serve</span>
+      <kbd>Esc / P</kbd><span>Pause</span>
+      <kbd>Touch</kbd><span>On phones: drag anywhere to move, tap Serve</span>
+    </div>
+    <div class="pa-actions"><button class="pa-btn" data-play>Play</button></div>`,
+  { "[data-d]": pickDiff, "[data-play]": startMatch });
+  focusPlay();
+}
+const focusPlay = () => setTimeout(() => document.querySelector(".pa-overlay [data-play], .pa-overlay [data-again]")?.focus({ preventScroll: true }), 60);
+function startMatch() {
+  PA.closeOverlay(); S.mode = "play"; S.you = S.cpu = 0; setScore();
+  aim.set(0, 1.05); setupServe(); game.resume();
+  PA.music({ bpm: 108, root: 220, lead: [0, 4, 7, 9, null, 7, 4, null, 2, 4, 7, 12, null, 9, 7, null], bass: [0, null, 7, null, 5, null, 7, null] });
+}
+function togglePause() {
+  if (S.mode !== "play") return;
+  if (PA.overlayOpen()) { PA.closeOverlay(); game.resume(); return; }
+  game.pause();
+  PA.overlay(`<div class="pa-eyebrow">Paused</div><h2>Take a breather</h2>
+    <p>You ${S.you} – ${S.cpu} Patch · ${D().label}</p>
+    <div class="pa-actions"><button class="pa-btn" data-resume>Resume</button><button class="pa-btn ghost" data-restart>Restart</button>
+    <a class="pa-btn ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="../index.html#paddle">Back to gallery</a></div>`,
+  { "[data-resume]": () => { PA.closeOverlay(); game.resume(); }, "[data-restart]": () => { PA.stopMusic(); startMenu(); } });
+}
+bar.onPause(togglePause);
+function gameOver() {
+  S.mode = "over"; game.pause(); PA.stopMusic(); setHint("");
+  const won = S.you > S.cpu, margin = S.you - S.cpu;
+  const b = PA.best("paddle:" + S.diff, margin, true);
+  PA.sayJP(won ? "参った！" : "勝った！", { pitch: 1.2 });
+  PA.overlay(`<div class="pa-eyebrow">Match over · ${D().label}</div>
+    <h2>${won ? "You win the duel!" : "Patch takes it"}</h2>
+    <div class="pa-big-score">${S.you} – ${S.cpu}</div>
+    <p>Patch: “${won ? "I give up!" : "I win!"}” <span class="pd-jp">${won ? "参った！" : "勝った！"}</span></p>
+    <p>Best margin on ${D().label}: ${b.best > 0 ? "+" : ""}${b.best}${b.isNew ? " — new best!" : ""}</p>
+    ${diffSeg()}
+    <div class="pa-actions"><button class="pa-btn" data-again>Play again</button>
+    <a class="pa-btn ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="../index.html#paddle">Back to gallery</a></div>`,
+  { "[data-d]": pickDiff, "[data-again]": startMatch });
+  focusPlay();
+}
+
+/* ------------------------------------------------------------ camera */
+const camBase = { y: 1.7, z: 3.0, k: 0 };
+PA.onResize(() => {
+  renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight;
+  const k = clamp((1.25 - camera.aspect) / 0.8, 0, 1);
+  Object.assign(camBase, { y: 1.8 + k * 0.45, z: 3.4 + k * 0.75, k });
+  camera.fov = 50 + k * 14; camera.updateProjectionMatrix();
+});
+camera.position.set(0, camBase.y, camBase.z);
+
+/* ------------------------------------------------------------ update */
+const evs = [];
+let readyT = 0;
+const REPS = PA.params.has("auto") ? 8 : 1; // ?auto fast-forwards for automated testing
+function update(dt, t) {
+  if (dt > 0) for (let i = 0; i < REPS; i++) simulate(dt, t);
+  draw(dt, t);
+}
+function simulate(dt, t) {
+  const d = D();
+  {
+    S.timer += dt; S.spinToastT -= dt;
+    // --- player paddle input
+    const kx = (PA.keys.has("ArrowRight") || PA.keys.has("KeyD") ? 1 : 0) - (PA.keys.has("ArrowLeft") || PA.keys.has("KeyA") ? 1 : 0);
+    const ky = (PA.keys.has("ArrowUp") || PA.keys.has("KeyW") ? 1 : 0) - (PA.keys.has("ArrowDown") || PA.keys.has("KeyS") ? 1 : 0);
+    aim.x += kx * 2.4 * dt; aim.y += ky * 1.8 * dt;
+    if (PA.THUMB || PA.params.has("auto")) { // autopilot for attract mode (and ?auto testing)
+      const pr = S.phase === "rally" && S.hitter === "C" ? predictCross(ZP) : null;
+      const tx = pr ? pr.x + 0.05 : ball.p.x * 0.4, ty = pr ? pr.y : 1.05;
+      aim.x += (tx - aim.x) * Math.min(1, dt * 7); aim.y += (ty - aim.y) * Math.min(1, dt * 7);
+    }
+    aim.x = clamp(aim.x, -1.2, 1.2); aim.y = clamp(aim.y, 0.8, 1.7);
+    const pp = pPad.position, k = 1 - Math.exp(-28 * dt);
+    pp.x += (aim.x - pp.x) * k; pp.y += (aim.y - pp.y) * k; pp.z = ZP;
+    pv.lerp(new THREE.Vector2((pp.x - prevPad.x) / dt, (pp.y - prevPad.y) / dt), 0.35); prevPad.set(pp.x, pp.y);
+    pPad.rotation.set(clamp(-pv.y * 0.08, -0.5, 0.5), 0, clamp(-pv.x * 0.1, -0.6, 0.6) - 0.15);
+
+    // --- CPU paddle
+    if (S.phase === "rally" && S.hitter === "P") {
+      S.cpuTimer -= dt;
+      if (!S.cpuPlan && S.cpuTimer <= 0) {
+        const pr = predictCross(ZC);
+        S.cpuPlan = pr && pr.bounced >= 1 ? { x: pr.x + rand(-1, 1) * d.noise * 2 * (1 + S.shotQ), y: pr.y + rand(-1, 1) * d.noise * (1 + S.shotQ) } : { x: cpuPos.x * 0.5, y: 1.05, skip: true };
+      }
+    }
+    const target = S.cpuPlan && S.phase === "rally" && S.hitter === "P" ? S.cpuPlan : { x: S.phase === "serve" && S.server === "C" ? 0.15 : ball.p.x * 0.35, y: 1.05 };
+    const dx = target.x - cpuPos.x, dy = clamp(target.y, 0.8, 1.7) - cpuPos.y, dl = Math.hypot(dx, dy), mv = Math.min(dl, d.cpuSpeed * dt);
+    if (dl > 1e-4) { cpuPos.x += dx / dl * mv; cpuPos.y += dy / dl * mv; }
+    cPad.position.copy(cpuPos); cPad.rotation.set(0, Math.PI, clamp(dx * 0.6, -0.5, 0.5) + 0.15);
+
+    // --- ball
+    if (S.phase === "serve") {
+      const src = S.server === "P" ? pp : cpuPos, dir = S.server === "P" ? -1 : 1;
+      ball.p.set(src.x + 0.02, src.y + 0.16 + Math.abs(Math.sin(S.timer * 4)) * 0.12, src.z + dir * 0.1);
+      if (S.mode === "play" && S.server === "P" && (S.serveReq || (PA.THUMB && S.timer > 0.3))) playerServe();
+      if (S.mode !== "play" && S.server === "P" && S.timer > 0.6) playerServe();
+      if (S.server === "C" && S.timer > 1.1) cpuServe();
+    } else {
+      const n = Math.ceil(dt / 0.004), h = dt / n;
+      for (let i = 0; i < n; i++) {
+        const pz = ball.p.z; evs.length = 0; stepBall(ball, h, evs);
+        for (const e of evs) onEvent(e);
+        // paddle plane crossings
+        if (S.phase === "rally" && S.hitter === "C" && pz < ZP && ball.p.z >= ZP) {
+          const dist = Math.hypot(ball.p.x - pp.x, ball.p.y - pp.y);
+          if (dist < d.hitR || (PA.THUMB && dist < 0.6)) { if (S.bounced === 0) { ball.v.z *= -0.5; award("P", "Long ball — out"); } else playerHit(); }
+        }
+        if (S.phase === "rally" && S.hitter === "P" && pz > ZC && ball.p.z <= ZC && S.bounced >= 1) {
+          if (Math.hypot(ball.p.x - cpuPos.x, ball.p.y - cpuPos.y) < (PA.THUMB ? 0.6 : d.cpuR)) cpuHit();
+        }
+        if (S.phase === "rally" && (Math.abs(ball.p.z) > 3.6 || Math.abs(ball.p.x) > 3.2)) onEvent({ t: "floor" });
+      }
+      if (S.phase === "point" && S.timer > 1.5) {
+        if (S.mode === "play" && (S.you >= WIN || S.cpu >= WIN)) gameOver(); else setupServe();
+      }
+    }
+
+    // --- Patch's body follows his paddle, reacts to points
+    const P = patch;
+    P.root.position.x += (cpuPos.x + 0.36 - P.root.position.x) * Math.min(1, dt * 6);
+    P.root.position.z = -2.1;
+    P.moodT = Math.max(0, P.moodT - dt); if (P.moodT === 0) P.mood = 0;
+    P.jump = Math.max(0, P.jump - dt * 1.4);
+    const hop = Math.abs(Math.sin(t * 9)) * Math.min(0.06, Math.abs(dx) * 0.4) + Math.sin(P.jump * Math.PI) * 0.35;
+    P.root.position.y = hop;
+    P.body.rotation.y = P.jump > 0 ? (1 - P.jump) * Math.PI * 2 : Math.sin(t * 1.3) * 0.08;
+    P.head.rotation.z = P.mood < 0 ? Math.sin(t * 10) * 0.12 : Math.sin(t * 2) * 0.05;
+    P.head.rotation.x = P.mood < 0 ? 0.35 : 0;
+    P.hat.rotation.z = P.mood > 0 ? Math.sin(t * 14) * 0.15 : 0;
+    const blink = (t % 3.3) < 0.12 ? 0.15 : 1; P.eyes.forEach((e) => (e.scale.z = blink));
+    // stretch his arm from shoulder to paddle handle
+    const sh = new V3(-0.28, 1.22, 0).applyMatrix4(P.body.matrixWorld), hd = cPad.position.clone().add(new V3(0, -0.2, 0));
+    const dir = hd.clone().sub(sh), len = dir.length();
+    P.armR.position.copy(sh).add(hd).multiplyScalar(0.5).sub(P.root.position);
+    P.armR.scale.set(1, len, 1); P.armR.quaternion.setFromUnitVectors(new V3(0, 1, 0), dir.normalize());
+  }
+
+}
+function draw(dt, t) {
+  const d = D();
+  // --- visuals: ball, shadow, trail, guide, camera
+  ballMesh.position.copy(ball.p);
+  const overTable = Math.abs(ball.p.x) < HW && Math.abs(ball.p.z) < HL;
+  const gy = overTable ? TOP + 0.003 : 0.005, hgt = Math.max(0, ball.p.y - gy);
+  ballShadow.position.set(ball.p.x, gy, ball.p.z); ballShadow.scale.setScalar(1 + hgt * 0.8);
+  shadowMat.opacity = clamp(0.5 - hgt * 0.25, 0.12, 0.5);
+  if (dt > 0) { trailPts.unshift(ball.p.clone()); if (trailPts.length > 14) trailPts.pop(); }
+  trail.forEach((m, i) => { const p = trailPts[i * 2 + 1]; m.visible = !!p && S.phase !== "serve"; if (p) m.position.copy(p); });
+  const g = S.phase === "rally" && S.hitter === "C" && d.guide && S.guideAt && S.guideAt.bounced >= 1 && !PA.THUMB;
+  guide.visible = !!g;
+  if (g) { guide.position.set(S.guideAt.x, S.guideAt.y, ZP); guide.scale.setScalar(1 + Math.sin(t * 10) * 0.08); }
+  const k2 = 0.25 + camBase.k * 0.4;
+  camera.position.x += (pPad.position.x * k2 - camera.position.x) * Math.min(1, (dt || 0.016) * 3);
+  camera.position.y = camBase.y; camera.position.z = camBase.z;
+  camera.lookAt(camera.position.x * 0.4, 0.9 + camBase.k * 0.12, -0.9 - camBase.k * 0.3);
+  renderer.render(scene, camera);
+
+  // thumbnail: mark ready once the ball is mid-flight over the table
+  if (PA.THUMB && !window.__ready) { readyT = readyT || t; const el = t - readyT; if ((el > 2 && S.phase === "rally" && ball.p.z > -0.9 && ball.p.z < 0.2 && ball.v.z < 0) || el > 8) window.__ready = true; }
+}
+
+/* ------------------------------------------------------------ boot */
+if (PA.params.has("auto")) window.__pd = () => ({ ...S, cpuPlan: S.cpuPlan, ball: ball.p.toArray().map((v) => +v.toFixed(2)), v: ball.v.toArray().map((v) => +v.toFixed(2)), pad: pPad.position.toArray(), cpu: cpuPos.toArray() });
+setScore();
+if (PA.THUMB) { S.mode = "demo"; S.you = 3; S.cpu = 2; setScore(); setupServe(); game.resume(); }
+else { S.mode = "menu"; setupServe(); setHint(""); startMenu(); }
+</script></body></html>

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pixel Acre Arcade</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Ride the Valley Line cab through a 3D valley and stop at free browser games built with Three.js.">
+<meta name="theme-color" content="#17122b">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=DotGothic16&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout concept: the page is one 3D road. A cab drives stop to stop; each stop's details
+   ride in a glass card on the left (bottom sheet on phones) while the world fills the screen. */
+:root {
+  --night: #17122b;
+  --dusk: #2a2147;
+  --dusk-2: #3a2f5e;
+  --marigold: #f4a63a;
+  --sprout: #86d9a6;
+  --rose: #f27c8c;
+  --sky: #8fb8ff;
+  --mist: #ece6fa;
+  --mist-dim: #b9b0d6;
+  --glass: color-mix(in srgb, #17122b 70%, transparent);
+  --line: color-mix(in srgb, #ece6fa 15%, transparent);
+  --font-display: "Dela Gothic One", "Arial Black", Impact, system-ui, sans-serif;
+  --font-body: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-pixel: "DotGothic16", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--night); color: var(--mist); font: 400 16px/1.55 var(--font-body); -webkit-font-smoothing: antialiased; overflow: hidden; }
+body.flat { overflow: auto; }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--marigold); outline-offset: 3px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+#world { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: linear-gradient(#2e2756, #f3b39a); touch-action: none; }
+body.flat #world, body.flat .hud { display: none; }
+
+/* ---------- loader ---------- */
+.loader {
+  position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; text-align: center;
+  padding: 24px max(16px, env(safe-area-inset-right, 0px)) 24px max(16px, env(safe-area-inset-left, 0px));
+  background: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, #17122b 72%, transparent), #17122b 78%);
+  transition: opacity .6s var(--ease-out), visibility .6s;
+}
+.loader.ready { background: radial-gradient(ellipse at 50% 55%, color-mix(in srgb, #17122b 30%, transparent), color-mix(in srgb, #17122b 88%, transparent) 80%); }
+.loader.gone { opacity: 0; visibility: hidden; pointer-events: none; }
+.loader-in { display: grid; justify-items: center; gap: 14px; }
+.loader .mark { width: 58px; height: 58px; }
+.loader h1 { margin: 6px 0 0; font: 400 clamp(30px, 6vw, 54px)/1 var(--font-display); letter-spacing: .01em; }
+.loader h1 span { color: var(--marigold); }
+.loader .sub { margin: 0; font: 400 13px/1.2 var(--font-pixel); color: var(--mist-dim); letter-spacing: .16em; text-transform: uppercase; }
+.meter { width: min(260px, 70vw); height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 10px; }
+.meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--sprout), var(--marigold)); transform-origin: left; transform: scaleX(0); transition: transform .3s linear; }
+.status { font: 400 12px/1 var(--font-pixel); color: var(--mist-dim); min-height: 14px; }
+.start { display: grid; justify-items: center; gap: 12px; margin-top: 10px; opacity: 0; transform: translateY(8px); transition: opacity .4s var(--ease-out), transform .4s var(--ease-out); pointer-events: none; }
+.loader.ready .start { opacity: 1; transform: none; pointer-events: auto; }
+.loader.ready .meter, .loader.ready .status { display: none; }
+.link-btn { appearance: none; border: 0; background: none; cursor: pointer; font: 600 13px/1 var(--font-body); color: var(--mist-dim); text-decoration: underline; text-underline-offset: 3px; padding: 8px; }
+.link-btn:hover { color: var(--mist); }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 0 22px; border-radius: 14px; border: 0; cursor: pointer;
+  font: 700 16px/1 var(--font-body); text-decoration: none; color: #2a1606; background: var(--marigold); box-shadow: 0 5px 0 #b06a14;
+  transition: transform .14s var(--ease-out), box-shadow .14s var(--ease-out), filter .15s;
+}
+.btn:hover { filter: brightness(1.06); transform: translateY(-2px); box-shadow: 0 7px 0 #b06a14; }
+.btn:active { transform: translateY(4px); box-shadow: 0 1px 0 #b06a14; }
+.btn.ghost { background: transparent; color: var(--mist); box-shadow: inset 0 0 0 1px var(--line); }
+.btn.ghost:hover { box-shadow: inset 0 0 0 1px var(--marigold); }
+.btn.ghost:active { transform: translateY(2px); }
+.btn svg { width: 15px; height: 15px; }
+
+/* ---------- top bar ---------- */
+.hud { position: fixed; z-index: 20; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+.top { top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: calc(14px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 14px max(16px, env(safe-area-inset-left, 0px)); pointer-events: none; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 400 15px/1 var(--font-display); text-shadow: 0 2px 12px rgba(10,6,24,.6); }
+.brand svg { width: 30px; height: 30px; flex: none; }
+.chip {
+  appearance: none; display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  font: 600 13px/1 var(--font-body); color: var(--mist); text-decoration: none; white-space: nowrap;
+  transition: border-color .15s, background .15s, transform .12s var(--ease-out);
+}
+.chip:hover { border-color: color-mix(in srgb, var(--marigold) 70%, transparent); }
+.chip:active { transform: scale(.96); }
+.chip[aria-pressed="true"] .dot { background: var(--sprout); box-shadow: 0 0 8px var(--sprout); }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mist-dim); }
+.top .sp { flex: 1; }
+.clock { font: 400 13px/1 var(--font-pixel); font-variant-numeric: tabular-nums; cursor: default; }
+.clock i { width: 10px; height: 10px; border-radius: 50%; background: var(--orb, #f4d35e); box-shadow: 0 0 10px var(--orb, #f4d35e); }
+
+/* ---------- stop card ---------- */
+.card {
+  left: max(28px, env(safe-area-inset-left, 0px)); top: 50%; transform: translateY(-50%);
+  width: min(420px, calc(100vw - 56px)); max-height: calc(100% - 180px); overflow: auto;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 24px;
+  backdrop-filter: blur(16px) saturate(1.15); -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  box-shadow: 0 30px 70px -20px rgba(6, 3, 18, .7), inset 0 1px 0 rgba(255,255,255,.07);
+  padding: 26px 26px 24px;
+  transition: opacity .28s var(--ease-out), transform .45s var(--ease-out);
+}
+.card.away { opacity: 0; transform: translateY(calc(-50% + 18px)); pointer-events: none; transition: opacity .2s var(--ease-in), transform .2s var(--ease-in); }
+.card > * { animation: up .5s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms + 60ms); }
+@keyframes up { from { opacity: 0; transform: translateY(10px); } }
+.stop-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; font: 400 12px/1 var(--font-pixel); letter-spacing: .08em; color: var(--mist-dim); text-transform: uppercase; }
+.stop-no { color: #1d1530; background: var(--marigold); padding: 5px 7px; border-radius: 6px; }
+.stop-line .area { color: var(--sprout); }
+.card h2 { margin: 0; font: 400 clamp(32px, 4.2vw, 46px)/1 var(--font-display); text-wrap: balance; }
+.card .genre { margin: 8px 0 14px; font: 600 14px/1.3 var(--font-body); color: var(--marigold); }
+.card p.desc { margin: 0 0 18px; color: var(--mist); font-size: 15px; }
+.spec { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; margin: 0 0 22px; font-size: 13px; }
+.spec dt { font: 400 11px/1.6 var(--font-pixel); letter-spacing: .1em; text-transform: uppercase; color: var(--mist-dim); }
+.spec dd { margin: 0; color: var(--mist); }
+.acts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.soonlist { list-style: none; margin: 0 0 20px; padding: 0; display: grid; gap: 10px; }
+.soonlist li { display: grid; grid-template-columns: 10px 1fr; gap: 12px; font-size: 14px; color: var(--mist-dim); }
+.soonlist li::before { content: ""; width: 10px; height: 10px; margin-top: 6px; background: var(--marigold); box-shadow: 3px 3px 0 var(--rose); }
+.soonlist b { color: var(--mist); font-weight: 700; }
+.faq { display: grid; gap: 8px; margin: 0 0 20px; }
+.faq details { border-radius: 12px; background: color-mix(in srgb, var(--dusk) 75%, transparent); }
+.faq summary { cursor: pointer; list-style: none; padding: 12px 14px; font: 600 14px/1.35 var(--font-body); display: flex; gap: 10px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; margin-left: auto; color: var(--marigold); font-family: var(--font-pixel); }
+.faq details[open] summary::after { content: "–"; }
+.faq p { margin: 0; padding: 0 14px 12px; font-size: 13px; color: var(--mist-dim); }
+.jump { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--line); }
+.jump span { width: 100%; font: 400 11px/1 var(--font-pixel); letter-spacing: .1em; color: var(--mist-dim); text-transform: uppercase; margin-bottom: 4px; }
+.jump button { appearance: none; border: 1px solid var(--line); background: transparent; color: var(--mist); border-radius: 999px; padding: 7px 11px; font: 600 12px/1 var(--font-body); cursor: pointer; transition: border-color .15s, background .15s; }
+.jump button:hover { border-color: var(--marigold); background: color-mix(in srgb, var(--marigold) 12%, transparent); }
+
+/* ---------- route & controls ---------- */
+.route {
+  left: max(28px, env(safe-area-inset-left, 0px)); right: max(28px, env(safe-area-inset-right, 0px)); bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  display: flex; align-items: center; gap: 16px; pointer-events: none;
+}
+.track { position: relative; flex: 1; max-width: 560px; height: 40px; pointer-events: auto; }
+.track .rail { position: absolute; left: 6px; right: 6px; top: 19px; height: 2px; background: var(--line); }
+.track .done { position: absolute; left: 6px; top: 19px; height: 2px; width: calc(100% - 12px); background: linear-gradient(90deg, var(--sprout), var(--marigold)); transform-origin: left; transform: scaleX(0); }
+.track button {
+  position: absolute; top: 13px; width: 14px; height: 14px; margin-left: -7px; padding: 0; border-radius: 50%; cursor: pointer;
+  border: 2px solid var(--mist-dim); background: var(--night); transition: transform .2s var(--spring), border-color .2s, background .2s;
+}
+.track button:hover { transform: scale(1.3); border-color: var(--mist); }
+.track button.on { border-color: var(--marigold); background: var(--marigold); transform: scale(1.25); }
+.track button .tip { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(4px); white-space: nowrap; font: 400 11px/1 var(--font-pixel); color: var(--mist); background: var(--night); padding: 5px 7px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s var(--ease-out); }
+.track button:hover .tip, .track button:focus-visible .tip { opacity: 1; transform: translateX(-50%); }
+.cab-ico { position: absolute; top: 2px; width: 22px; height: 14px; margin-left: -11px; pointer-events: none; }
+.speed { font: 400 13px/1 var(--font-pixel); color: var(--mist-dim); font-variant-numeric: tabular-nums; min-width: 72px; text-shadow: 0 1px 8px rgba(10,6,24,.8); }
+.speed b { font-weight: 400; color: var(--mist); font-size: 18px; }
+.route .sp { flex: 1; }
+.steer { display: flex; gap: 8px; pointer-events: auto; }
+.steer button { appearance: none; width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--line); background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); cursor: pointer; display: grid; place-items: center; transition: border-color .15s, transform .12s var(--ease-out), opacity .2s; }
+.steer button:hover { border-color: var(--marigold); }
+.steer button:active { transform: scale(.92); }
+.steer button[disabled] { opacity: .35; cursor: default; }
+.steer svg { width: 18px; height: 18px; }
+.hint { left: 50%; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); font: 400 12px/1 var(--font-pixel); color: var(--mist); background: var(--glass); border: 1px solid var(--line); padding: 9px 12px; border-radius: 10px; white-space: nowrap; transition: opacity .5s; }
+.hint.off { opacity: 0; }
+.bubble { left: 50%; top: calc(74px + env(safe-area-inset-top, 0px)); transform: translate(-50%, -8px); opacity: 0; max-width: calc(100vw - 32px); padding: 9px 14px; border-radius: 14px; background: var(--mist); color: #1d1530; font: 600 14px/1.3 var(--font-body); box-shadow: 0 10px 30px rgba(0,0,0,.3); transition: opacity .25s var(--ease-out), transform .35s var(--spring); pointer-events: none; text-align: center; }
+.bubble.show { opacity: 1; transform: translate(-50%, 0); }
+.bubble small { display: block; font: 400 11px/1.2 var(--font-pixel); color: #5a4f80; margin-top: 3px; }
+
+/* ---------- menu ---------- */
+.menu { position: fixed; inset: 0; z-index: 50; display: grid; justify-items: end; background: color-mix(in srgb, #0b0816 50%, transparent); opacity: 0; visibility: hidden; transition: opacity .25s var(--ease-out), visibility .25s; }
+.menu.open { opacity: 1; visibility: visible; }
+.menu-panel { width: min(400px, 100%); height: 100%; overflow: auto; background: var(--night); border-left: 1px solid var(--line); padding: calc(20px + env(safe-area-inset-top, 0px)) max(22px, env(safe-area-inset-right, 0px)) 24px 22px; transform: translateX(30px); transition: transform .35s var(--ease-out); }
+.menu.open .menu-panel { transform: none; }
+.menu-head { display: flex; align-items: center; margin-bottom: 18px; }
+.menu-head h2 { margin: 0; font: 400 22px/1 var(--font-display); }
+.menu-head .chip { margin-left: auto; }
+.menu ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.menu li button { width: 100%; appearance: none; border: 0; background: transparent; text-align: left; cursor: pointer; display: grid; grid-template-columns: 54px 1fr auto; gap: 12px; align-items: center; padding: 12px; border-radius: 14px; transition: background .15s; }
+.menu li button:hover, .menu li button.on { background: var(--dusk); }
+.menu .t { font: 400 15px/1 var(--font-pixel); color: var(--mist-dim); font-variant-numeric: tabular-nums; }
+.menu .n { font: 700 15px/1.2 var(--font-body); }
+.menu .n small { display: block; font-weight: 500; font-size: 12px; color: var(--mist-dim); margin-top: 3px; }
+.menu .g { font: 400 11px/1 var(--font-pixel); color: var(--sprout); }
+.menu-foot { margin-top: 22px; padding-top: 16px; border-top: 1px dashed var(--line); font-size: 13px; color: var(--mist-dim); }
+
+/* ---------- flat (3D off) view ---------- */
+.flatview { display: none; padding: calc(84px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 60px max(16px, env(safe-area-inset-left, 0px)); max-width: 1100px; margin: 0 auto; }
+body.flat .flatview { display: block; }
+body.flat .top { position: fixed; background: color-mix(in srgb, var(--night) 90%, transparent); }
+.flatview h2 { font: 400 clamp(28px, 4vw, 40px)/1.05 var(--font-display); margin: 0 0 8px; }
+.flatview > p { color: var(--mist-dim); margin: 0 0 28px; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 22px; }
+.fcard { display: grid; gap: 10px; text-decoration: none; padding: 10px 10px 16px; border-radius: 18px; transition: background .2s; }
+.fcard:hover { background: var(--dusk); }
+.fcard img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 12px; max-width: 100%; }
+.fcard h3 { margin: 0; font: 400 22px/1.1 var(--font-display); }
+.fcard p { margin: 0; color: var(--mist-dim); font-size: 15px; }
+.fcard .g { font: 400 12px/1 var(--font-pixel); color: var(--sprout); }
+
+@media (max-width: 760px) {
+  .card { left: 12px; right: 12px; width: auto; top: auto; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); transform: none; max-height: 48%; padding: 18px 18px 16px; border-radius: 20px; }
+  .card.away { transform: translateY(18px); }
+  .card h2 { font-size: 28px; }
+  .card .genre { margin: 6px 0 8px; }
+  .card p.desc { font-size: 14px; margin-bottom: 12px; }
+  .spec { display: none; }
+  .route { left: 12px; right: 12px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); gap: 10px; }
+  .brand span { display: none; }
+  .route .sp { display: none; }
+  .chip { padding: 0 11px; height: 34px; font-size: 12px; }
+  .top { gap: 6px; }
+  .hint { bottom: auto; top: calc(66px + env(safe-area-inset-top, 0px)); }
+  .speed { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
+}
+</style>
+</head><body>
+
+<canvas id="world" aria-label="A 3D valley road with a cab driving between game stops"></canvas>
+
+<div class="loader" id="loader" role="dialog" aria-modal="true" aria-labelledby="ldTitle">
+  <div class="loader-in">
+    <svg class="mark" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true"><rect width="16" height="16" rx="3" fill="#2a2147"/><rect x="2" y="11" width="12" height="3" fill="#94704c"/><rect x="2" y="11" width="12" height="1" fill="#7f5e3f"/><rect x="7" y="6" width="2" height="5" fill="#86d9a6"/><rect x="3" y="4" width="4" height="2" fill="#86d9a6"/><rect x="5" y="6" width="2" height="1" fill="#86d9a6"/><rect x="9" y="3" width="4" height="2" fill="#86d9a6"/><rect x="9" y="5" width="2" height="1" fill="#86d9a6"/><rect x="11" y="1" width="2" height="2" fill="#f4a63a"/></svg>
+    <h1 id="ldTitle">Pixel Acre <span>Arcade</span></h1>
+    <p class="sub">Valley Line · free 3D games</p>
+    <div class="meter" aria-hidden="true"><i id="ldBar"></i></div>
+    <div class="status" id="ldStatus" role="status">Warming up the engine…</div>
+    <div class="start">
+      <button class="btn" id="goSound">Start the ride <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l7 5-7 5z" fill="currentColor"/></svg></button>
+      <button class="link-btn" id="goQuiet">Ride without sound</button>
+    </div>
+  </div>
+</div>
+
+<header class="hud top">
+  <a class="brand" href="#start" data-go="0" aria-label="Pixel Acre Arcade, back to the depot">
+    <svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true"><rect width="16" height="16" rx="3" fill="#2a2147"/><rect x="2" y="11" width="12" height="3" fill="#94704c"/><rect x="7" y="6" width="2" height="5" fill="#86d9a6"/><rect x="3" y="4" width="4" height="2" fill="#86d9a6"/><rect x="9" y="3" width="4" height="2" fill="#86d9a6"/><rect x="11" y="1" width="2" height="2" fill="#f4a63a"/></svg>
+    <span>Pixel Acre Arcade</span>
+  </a>
+  <span class="sp"></span>
+  <span class="chip clock" title="Time in the valley"><i id="orb"></i><span id="clock">6:00 AM</span></span>
+  <button class="chip" id="soundBtn" aria-pressed="false"><span class="dot"></span><span class="lbl3">Sound</span></button>
+  <button class="chip" id="flatBtn" aria-pressed="true" title="Turn the 3D world off for a simple list"><span class="dot"></span>3D</button>
+  <button class="chip" id="menuBtn" aria-haspopup="dialog" aria-expanded="false">Route</button>
+</header>
+
+<section class="hud card away" id="card" aria-live="polite"></section>
+
+<div class="hud bubble" id="bubble" aria-hidden="true"></div>
+<div class="hud hint" id="hint">Scroll, swipe or press ↓ to drive</div>
+
+<nav class="hud route" aria-label="Stops">
+  <div class="track" id="track"><span class="rail"></span><span class="done" id="done"></span>
+    <svg class="cab-ico" id="cabIco" viewBox="0 0 22 14" aria-hidden="true"><rect x="1" y="5" width="20" height="6" rx="2" fill="#f4a63a"/><rect x="5" y="1" width="11" height="5" rx="1.5" fill="#fff4e6"/><rect x="9" y="0" width="4" height="2" fill="#86d9a6"/><circle cx="6" cy="12" r="2" fill="#1d1530"/><circle cx="16" cy="12" r="2" fill="#1d1530"/></svg>
+  </div>
+  <span class="speed" id="speed" aria-hidden="true"><b>0</b> km/h</span>
+  <span class="sp"></span>
+  <div class="steer">
+    <button id="prevBtn" aria-label="Previous stop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3l5 6H3z" fill="currentColor"/></svg></button>
+    <button id="nextBtn" aria-label="Next stop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13l5-6H3z" fill="currentColor"/></svg></button>
+  </div>
+</nav>
+
+<div class="menu" id="menu" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+  <div class="menu-panel">
+    <div class="menu-head"><h2 id="menuTitle">Valley Line route</h2><button class="chip" id="menuClose">Close</button></div>
+    <ol id="menuList"></ol>
+    <p class="menu-foot">Pick a stop and the cab drives you there. Keys: ↑ ↓ to drive, Esc to close.</p>
+  </div>
+</div>
+
+<main class="flatview" id="flat" aria-labelledby="flatTitle">
+  <h2 id="flatTitle">All games</h2>
+  <p>The 3D ride is off. Every game is listed here; turn 3D back on from the top bar.</p>
+  <div class="fgrid" id="fgrid"></div>
+</main>
+
+<script type="module" src="world.js"></script>
+</body></html>

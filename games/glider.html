@@ -1,0 +1,647 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paper Glider — Pixel Acre Arcade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=DotGothic16&family=Instrument+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="common.css">
+<style>
+  .gl-hud {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 15;
+    display: flex; gap: 10px; align-items: center; pointer-events: none; white-space: nowrap;
+    font: 400 12px/1 var(--font-pixel); color: var(--mist); letter-spacing: .06em;
+    background: color-mix(in srgb, var(--night) 70%, transparent); padding: 9px 12px; border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--mist) 12%, transparent);
+  }
+  .gl-touch .gl-hud { bottom: calc(176px + env(safe-area-inset-bottom, 0px)); }
+  .gl-meter { width: 130px; height: 8px; border-radius: 99px; background: var(--dusk-2); overflow: hidden; }
+  .gl-meter i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, var(--marigold), var(--rose)); transform-origin: left; }
+  .gl-hud.low .gl-meter i { background: var(--mist-dim); }
+  .gl-arrow {
+    position: fixed; left: 0; top: 0; z-index: 14; width: 34px; height: 34px; margin: -17px 0 0 -17px; pointer-events: none;
+    background: var(--marigold); clip-path: polygon(100% 50%, 15% 8%, 32% 50%, 15% 92%);
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); display: none;
+  }
+  .gl-tag {
+    position: fixed; left: 0; top: 0; z-index: 14; pointer-events: none; display: none;
+    font: 400 11px/1 var(--font-pixel); color: var(--night); background: var(--marigold);
+    padding: 4px 6px; border-radius: 6px; transform: translate(-50%, -100%);
+  }
+  .gl-drag { position: fixed; z-index: 13; width: 88px; height: 88px; margin: -44px 0 0 -44px; border-radius: 50%; pointer-events: none; display: none;
+    border: 2px solid color-mix(in srgb, var(--mist) 35%, transparent); }
+  .gl-drag i { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: color-mix(in srgb, var(--mist) 70%, transparent); }
+  .pa-score.warn { color: var(--rose); }
+  @media (max-width: 480px) {
+    .pa-title { display: none; }
+    .pa-bar { gap: 6px; padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); }
+    .pa-bar .pa-chip { padding: 0 10px; font-size: 12px; white-space: nowrap; }
+    .pa-bar .pa-score { font-size: 13px; }
+  }
+</style>
+<script type="importmap">{"imports":{"three":"../lib/three.module.min.js"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from "three";
+import { PA } from "./common.js";
+
+/* ------------------------------------------------------------ constants & noise */
+const V3 = THREE.Vector3, clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp, sstep = THREE.MathUtils.smoothstep;
+const WATER = 0.6, COURSE_RINGS = 30, RING_R = 4.5;
+const AUTO = PA.THUMB || PA.params.has("auto");
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (a) => a[(Math.random() * a.length) | 0];
+function hash(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); }
+function vnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y) { let s = 0, a = 0.5, f = 1; for (let i = 0; i < 4; i++) { s += a * vnoise(x * f, y * f); f *= 2.03; a *= 0.5; } return s; }
+const riverX = (z) => 40 * Math.sin(z / 110) + 18 * Math.sin(z / 37 + 1);
+// Terrain height: rolling hills, a river channel, and a mountain bowl around the edge.
+function H(x, z) {
+  const r = Math.hypot(x, z);
+  let h = 3 + Math.pow(fbm(x * 0.0055 + 7, z * 0.0055 + 3), 1.5) * 50;
+  // jagged ridge around the valley; beyond it the land drops away so the map edge stays hidden
+  h += sstep(r, 330, 440) * (70 + 60 * vnoise(Math.atan2(z, x) * 5 + 9, 1.7));
+  const edge = sstep(Math.max(Math.abs(x), Math.abs(z)), 455, 500);
+  h = h * (1 - edge) - 25 * edge;
+  const k = sstep(Math.abs(x - riverX(z)), 8, 30);
+  return -1.5 + (h + 1.5) * k;
+}
+
+/* ------------------------------------------------------------ renderer & scene */
+const renderer = await PA.renderer(THREE, { clear: 0x2a2147 });
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xe9a487, 120, 640);
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.5, 2000);
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9, metalness: 0, ...o });
+document.body.classList.toggle("gl-touch", PA.TOUCH);
+
+/* ---- sky dome + sun ---- */
+const sunDir = new V3(-0.55, 0.2, -0.81).normalize();
+let skyMesh;
+{
+  const g = new THREE.SphereGeometry(1200, 48, 24), pos = g.attributes.position;
+  const stops = [[-0.3, "#5a4470"], [0, "#ffb878"], [0.06, "#ffa07e"], [0.18, "#f27c8c"], [0.4, "#7b4f95"], [1, "#2a2147"]].map(([t, c]) => [t, new THREE.Color(c)]);
+  const sunC = new THREE.Color("#ffe6b0"), c = new THREE.Color(), p = new V3(), cols = [];
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i).normalize();
+    let k = 0; while (k < stops.length - 2 && p.y > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k], [t1, c1] = stops[k + 1];
+    c.copy(c0).lerp(c1, clamp((p.y - t0) / (t1 - t0), 0, 1)).lerp(sunC, Math.pow(Math.max(0, p.dot(sunDir)), 8) * 0.9);
+    cols.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  const sky = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false }));
+  sky.renderOrder = -1; scene.add(sky); skyMesh = sky;
+  const sun = new THREE.Mesh(new THREE.CircleGeometry(48, 40), new THREE.MeshBasicMaterial({ color: 0xfff1c8, fog: false }));
+  sun.position.copy(sunDir).multiplyScalar(1100); sun.lookAt(0, 0, 0); sky.add(sun);
+}
+
+/* ---- lights (shadow box follows the glider) ---- */
+scene.add(new THREE.HemisphereLight(0xc4b4ff, 0x6a4a3a, 1.05));
+const sunLight = new THREE.DirectionalLight(0xffb46b, 2.7);
+sunLight.castShadow = true;
+Object.assign(sunLight.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 500 });
+sunLight.shadow.mapSize.set(2048, 2048); sunLight.shadow.bias = -0.0006; sunLight.shadow.normalBias = 0.6;
+scene.add(sunLight, sunLight.target);
+
+/* ---- terrain: per-face colours for a patchwork of fields ---- */
+{
+  const g = new THREE.PlaneGeometry(1000, 1000, 150, 150).toNonIndexed(); g.rotateX(-Math.PI / 2);
+  const pos = g.attributes.position, cols = [], c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) pos.setY(i, H(pos.getX(i), pos.getZ(i)));
+  const fields = ["#d9b45a", "#c98f3e", "#8fb455", "#6e9e4c", "#e2c57a", "#a7c464", "#b8784a", "#9db86a"].map((h) => new THREE.Color(h));
+  const hedge = new THREE.Color("#4f7a4a"), forest = new THREE.Color("#4a7550"), meadow = new THREE.Color("#7fae5a"),
+    sand = new THREE.Color("#c8a77a"), rock = new THREE.Color("#8a7090"), snow = new THREE.Color("#f6e2dc");
+  const a = new V3(), b = new V3(), d = new V3(), n = new V3();
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i); b.fromBufferAttribute(pos, i + 1); d.fromBufferAttribute(pos, i + 2);
+    n.subVectors(b, a).cross(d.clone().sub(a)).normalize();
+    const cx = (a.x + b.x + d.x) / 3, cz = (a.z + b.z + d.z) / 3, cy = (a.y + b.y + d.y) / 3, ny = Math.abs(n.y);
+    const rd = Math.abs(cx - riverX(cz));
+    if (cy < 2.5) c.copy(sand);
+    else if (cy > 120) c.copy(rock).lerp(snow, sstep(cy, 140, 200));
+    else if (cy > 62) c.copy(forest).lerp(rock, sstep(cy, 62, 110));
+    else if (rd < 22) c.copy(meadow);
+    else if (ny < 0.9) c.copy(forest);
+    else {
+      const fx = (cx + 13 * Math.sin(cz * 0.01)) / 34, fz = cz / 26;
+      const ex = fx - Math.floor(fx), ez = fz - Math.floor(fz);
+      c.copy(ex < 0.12 || ez < 0.14 ? hedge : fields[Math.floor(hash(Math.floor(fx), Math.floor(fz)) * fields.length)]);
+    }
+    c.offsetHSL(0, 0, (hash(cx * 0.3, cz * 0.3) - 0.5) * 0.05);
+    for (let k = 0; k < 3; k++) cols.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3)); g.computeVertexNormals();
+  const terrain = new THREE.Mesh(g, std(0xffffff, { vertexColors: true })); terrain.receiveShadow = true; scene.add(terrain);
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshStandardMaterial({ color: 0x7fa6e6, emissive: 0x3a4a88, emissiveIntensity: 0.45, roughness: 0.25, metalness: 0.1 }));
+  water.rotation.x = -Math.PI / 2; water.position.y = WATER; water.receiveShadow = true; scene.add(water);
+}
+
+/* ---- instanced trees (foliage + trunk share matrices) ---- */
+{
+  const N = 1100;
+  const fol = new THREE.InstancedMesh(new THREE.ConeGeometry(2.4, 7, 6).translate(0, 5.5, 0), std(0xffffff), N);
+  const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.5, 2.4, 5).translate(0, 1.2, 0), std(0x6b4630), N);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new V3(), p = new V3(), c = new THREE.Color();
+  let n = 0;
+  for (let tries = 0; n < N && tries < 20000; tries++) {
+    const x = rand(-460, 460), z = rand(-460, 460), h = H(x, z);
+    if (h < 4 || h > 95 || Math.abs(x - riverX(z)) < 16) continue;
+    const slope = Math.abs(H(x + 4, z) - h) + Math.abs(H(x, z + 4) - h);
+    if (slope < 1.2 && h < 62 && hash(Math.floor(x / 34), Math.floor(z / 26)) > 0.18 && Math.random() < 0.85) continue; // keep fields mostly open
+    const k = rand(0.6, 1.25); s.set(k, k * rand(0.85, 1.3), k); p.set(x, h - 0.3, z);
+    q.setFromAxisAngle(new V3(0, 1, 0), rand(0, 6.3));
+    m.compose(p, q, s); fol.setMatrixAt(n, m); trunk.setMatrixAt(n, m);
+    fol.setColorAt(n++, c.set(pick(["#3f6b4f", "#4c7a4a", "#5b8350", "#6a8f4c", "#3e5f50"])));
+  }
+  fol.count = trunk.count = n; fol.castShadow = trunk.castShadow = true; fol.receiveShadow = true;
+  scene.add(fol, trunk);
+}
+
+/* ---- ring path around the valley ---- */
+function pathPoint(th, radial = 0) { const r = 230 + 35 * Math.sin(3 * th + 0.5) + radial; return new V3(Math.cos(th) * r, 0, Math.sin(th) * r); }
+function clearance(p) { let m = WATER; for (const [dx, dz] of [[0, 0], [14, 0], [-14, 0], [0, 14], [0, -14]]) m = Math.max(m, H(p.x + dx, p.z + dz)); return m; }
+function pathTangent(th) { return pathPoint(th + 0.01).sub(pathPoint(th - 0.01)).normalize(); }
+
+/* ---- windmills with spinning blades ---- */
+const windmills = [];
+{
+  const wall = std(0xefe3cf), cap = std(0xb5473f), sail = std(0xf6efe2), frame = std(0x6b4630);
+  [[0.75, 55], [1.85, -60], [2.9, 62], [3.9, -55], [4.85, 58], [5.75, -62]].forEach(([th, rad]) => {
+    const p = pathPoint(th, rad), y = H(p.x, p.z) - 0.5, g = new THREE.Group();
+    g.position.set(p.x, y, p.z); g.rotation.y = rand(0, 6.3);
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.6, 15, 6), wall); t.position.y = 7.5;
+    const c = new THREE.Mesh(new THREE.ConeGeometry(2.3, 3.4, 6), cap); c.position.y = 16.6;
+    const hub = new THREE.Group(); hub.position.set(0, 14.6, 2.0);
+    for (let i = 0; i < 4; i++) {
+      const arm = new THREE.Group(); arm.rotation.z = (i * Math.PI) / 2;
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(0.35, 10, 0.3), frame); beam.position.y = 5;
+      const s = new THREE.Mesh(new THREE.BoxGeometry(1.8, 7, 0.12), sail); s.position.set(1.05, 6, 0);
+      arm.add(beam, s); hub.add(arm);
+    }
+    g.add(t, c, hub); g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(g); windmills.push({ g, hub, speed: rand(0.8, 1.4), base: y });
+  });
+}
+
+/* ---- drifting clouds ---- */
+const clouds = [];
+{
+  const mat = new THREE.MeshStandardMaterial({ color: 0xfff1ea, emissive: 0xf6a890, emissiveIntensity: 0.3, flatShading: true, roughness: 1 });
+  const geo = new THREE.IcosahedronGeometry(1, 0);
+  for (let i = 0; i < 18; i++) {
+    const g = new THREE.Group(), a = rand(0, 6.3), r = rand(120, 420);
+    g.position.set(Math.cos(a) * r, rand(85, 135), Math.sin(a) * r);
+    for (let k = 0, n = 4 + (Math.random() * 4 | 0); k < n; k++) {
+      const m = new THREE.Mesh(geo, mat), s = rand(7, 15);
+      m.position.set(k * 9 - n * 4.5 + rand(-3, 3), rand(-2, 3), rand(-6, 6)); m.scale.set(s * 1.3, s * 0.7, s);
+      g.add(m);
+    }
+    scene.add(g); clouds.push(g);
+  }
+}
+
+/* ---- updraft columns: rising particles that lift the glider ---- */
+const GLOW = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d");
+  const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, "rgba(255,245,215,1)"); gr.addColorStop(0.35, "rgba(255,220,160,.5)"); gr.addColorStop(1, "rgba(255,200,140,0)");
+  x.fillStyle = gr; x.fillRect(0, 0, 64, 64); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const UP_R = 10, UP_N = 90, updrafts = [];
+const upMat = new THREE.PointsMaterial({ map: GLOW, size: 1.6, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: 0xffe6b8 });
+const upColMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.07, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+function makeUpdraft() {
+  const geo = new THREE.BufferGeometry(), arr = new Float32Array(UP_N * 3), seed = [];
+  for (let i = 0; i < UP_N; i++) seed.push({ a: rand(0, 6.3), r: Math.sqrt(Math.random()) * UP_R, y: Math.random(), s: rand(0.6, 1.2) });
+  geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  const pts = new THREE.Points(geo, upMat); pts.frustumCulled = false;
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(UP_R * 0.8, UP_R, 1, 16, 1, true), upColMat);
+  scene.add(pts, col);
+  const u = { pts, col, seed, pos: new V3(), top: 60, active: false };
+  updrafts.push(u); return u;
+}
+function placeUpdraft(u, x, z, top) {
+  const g = H(x, z); u.pos.set(x, Math.max(g, WATER), z); u.top = top - u.pos.y; u.active = true;
+  u.col.scale.y = u.top; u.col.position.set(x, u.pos.y + u.top / 2, z); u.pts.visible = u.col.visible = true;
+}
+for (let i = 0; i < 12; i++) makeUpdraft();
+
+/* ---- the paper glider ---- */
+const glider = (() => {
+  const N = [0, 0, -1.7], T = [0, 0.02, 1.0], K = [0, -0.38, 0.95], L = [-1.15, 0.16, 1.0], Rw = [1.15, 0.16, 1.0];
+  const mix = (p, q, t) => p.map((v, i) => v + (q[i] - v) * t);
+  const A = mix(N, T, 0.78), BL = mix(N, L, 0.78), BR = mix(N, Rw, 0.78);
+  const tris = [
+    [N, BL, A, "#f7f1e6"], [A, BL, L, "#f4a63a"], [A, L, T, "#f4a63a"],
+    [N, A, BR, "#efe6d6"], [A, Rw, BR, "#f27c8c"], [A, T, Rw, "#f27c8c"],
+    [N, K, T, "#e6dccb"],
+  ];
+  const pos = [], col = [], c = new THREE.Color();
+  for (const [p, q, r, h] of tris) { pos.push(...p, ...q, ...r); c.set(h); for (let i = 0; i < 3; i++) col.push(c.r, c.g, c.b); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  const mesh = new THREE.Mesh(g, std(0xffffff, { vertexColors: true, side: THREE.DoubleSide, roughness: 0.75 }));
+  mesh.castShadow = true;
+  mesh.scale.setScalar(1.5);
+  const grp = new THREE.Group(); grp.add(mesh); grp.rotation.order = "YXZ"; scene.add(grp);
+  return grp;
+})();
+
+/* ---- rings ---- */
+const ringGeo = new THREE.TorusGeometry(RING_R, 0.42, 8, 36);
+const ringNext = std(0xf4a63a, { emissive: 0xf4a63a, emissiveIntensity: 1.1, roughness: 0.5 });
+const ringFuture = std(0xf4c27a, { emissive: 0xf27c8c, emissiveIntensity: 0.35, roughness: 0.6, transparent: true, opacity: 0.8 });
+const ringFill = new THREE.Mesh(new THREE.CircleGeometry(RING_R - 0.2, 36), new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+scene.add(ringFill);
+let rings = [];
+function makeRing(th, radial, jitterY, prev) {
+  const p = pathPoint(th, radial), mid = pathPoint(th - 0.1, radial);
+  p.y = Math.max(clearance(p), clearance(mid)) + 30 + 9 * Math.sin(4.3 * th + 1) + jitterY;
+  // face the ring along the line from the previous ring so the course flows
+  const n = prev ? p.clone().sub(prev.pos).setY((p.y - prev.pos.y) * 0.5).normalize().add(pathTangent(th)).normalize() : pathTangent(th);
+  const mesh = new THREE.Mesh(ringGeo, ringFuture); mesh.position.copy(p); mesh.lookAt(p.clone().add(n));
+  scene.add(mesh);
+  return { pos: p, n, th, radial, mesh, done: false, anim: 0 };
+}
+
+/* ---- confetti burst (instanced paper bits) ---- */
+const CONF = 160;
+const confetti = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.5, 0.3), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }), CONF);
+confetti.frustumCulled = false; scene.add(confetti);
+const bits = Array.from({ length: CONF }, () => ({ p: new V3(), v: new V3(), r: new THREE.Euler(), w: new V3(), life: 0 }));
+{ const c = new THREE.Color(), m = new THREE.Matrix4().makeScale(0, 0, 0); for (let i = 0; i < CONF; i++) { confetti.setMatrixAt(i, m); confetti.setColorAt(i, c.set(pick(["#f4a63a", "#f27c8c", "#86d9a6", "#8fb8ff", "#ece6fa"]))); } }
+let confI = 0;
+function burst(at, n = 36, speed = 9) {
+  for (let k = 0; k < n; k++) {
+    const b = bits[confI = (confI + 1) % CONF];
+    b.p.copy(at).add(new V3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(RING_R * 0.6));
+    b.v.set(rand(-1, 1), rand(-0.3, 1.2), rand(-1, 1)).normalize().multiplyScalar(rand(0.4, 1) * speed);
+    b.w.set(rand(-8, 8), rand(-8, 8), rand(-8, 8)); b.life = rand(1.2, 2.0);
+  }
+}
+
+/* ------------------------------------------------------------ HUD & input */
+const bar = PA.topBar({ title: "Paper Glider", scoreLabel: "" });
+const hud = PA.el(`<div class="gl-hud" aria-hidden="true"><span>BOOST</span><div class="gl-meter"><i></i></div><span data-spd>0 km/h</span></div>`);
+const arrow = PA.el(`<div class="gl-arrow" aria-hidden="true"></div>`), tag = PA.el(`<div class="gl-tag" aria-hidden="true"></div>`);
+const dragUI = PA.el(`<div class="gl-drag" aria-hidden="true"><i></i></div>`);
+document.body.append(hud, arrow, tag, dragUI);
+if (PA.THUMB) hud.style.display = "none";
+PA.touchControls({ stick: true, buttons: [{ label: "Boost", code: "Space" }] });
+let drag = null;
+const canvas = renderer.domElement;
+canvas.addEventListener("pointerdown", (e) => {
+  if (S.mode !== "play" || PA.overlayOpen()) return;
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
+  Object.assign(dragUI.style, { display: "block", left: e.clientX + "px", top: e.clientY + "px" });
+  canvas.setPointerCapture?.(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag || drag.id !== e.pointerId) return;
+  drag.dx = clamp((e.clientX - drag.x) / 70, -1, 1); drag.dy = clamp((e.clientY - drag.y) / 70, -1, 1);
+  dragUI.firstChild.style.transform = `translate(${drag.dx * 33}px,${drag.dy * 33}px)`;
+});
+const endDrag = (e) => { if (drag && drag.id === e.pointerId) { drag = null; dragUI.style.display = "none"; dragUI.firstChild.style.transform = ""; } };
+canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
+addEventListener("keydown", (e) => { if (e.code === "Escape" || e.code === "KeyP") togglePause(); });
+
+/* ------------------------------------------------------------ game state */
+const S = {
+  mode: "menu", course: PA.store.get("glider:mode", "course"), // "course" | "endless"
+  next: 0, passed: 0, missed: 0, time: 0, left: 60, boost: 1, crash: null, lastToast: 0, upI: 0,
+};
+const F = { pos: new V3(), yaw: 0, pitch: 0, roll: 0, speed: 24, prev: new V3(), vel: new V3(), lift: 0 };
+const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+function setHUD() {
+  const sc = bar.bar.querySelector("[data-pa-score]");
+  if (S.course === "course") { bar.setScore(`${innerWidth < 480 ? "" : "Ring "}${Math.min(S.next + 1, COURSE_RINGS)}/${COURSE_RINGS} · ${fmt(S.time)}`); sc.classList.remove("warn"); }
+  else { bar.setScore(`Rings ${S.passed} · ${Math.ceil(Math.max(0, S.left))}s`); sc.classList.toggle("warn", S.left < 10); }
+}
+
+function clearWorld() {
+  rings.forEach((r) => scene.remove(r.mesh)); rings = [];
+  updrafts.forEach((u) => { u.active = false; u.pts.visible = u.col.visible = false; });
+  S.upI = 0;
+}
+// add one ring at the end of the path; every third gap gets an updraft column
+function pushRing() {
+  const last = rings[rings.length - 1];
+  const th = last ? last.th + rand(0.19, 0.23) : 0;
+  const endless = S.course === "endless" && rings.length > 2;
+  const radial = endless ? clamp(last.radial + rand(-16, 16), -30, 30) : 18 * Math.sin(th * 2.3);
+  const r = makeRing(th, radial, endless ? rand(-6, 10) : 0, last);
+  if (last && rings.length % 3 === 1) {
+    const u = updrafts[S.upI++ % updrafts.length];
+    const mid = last.pos.clone().lerp(r.pos, 0.5);
+    placeUpdraft(u, mid.x + rand(-4, 4), mid.z + rand(-4, 4), Math.max(last.pos.y, r.pos.y) + 22);
+  }
+  rings.push(r);
+}
+function resetRun() {
+  clearWorld();
+  const n = S.course === "course" ? COURSE_RINGS : 8;
+  for (let i = 0; i < n; i++) pushRing();
+  Object.assign(S, { next: 0, passed: 0, missed: 0, time: 0, left: 60, boost: 1, crash: null });
+  // start a little before the first ring, facing along the path
+  const th0 = -0.32, p = pathPoint(th0), t = pathTangent(th0);
+  F.pos.set(p.x, rings[0].pos.y + 3, p.z); F.prev.copy(F.pos);
+  F.yaw = Math.atan2(-t.x, -t.z); F.pitch = 0; F.roll = 0; F.speed = 24;
+  glider.rotation.set(0, 0, 0); glider.visible = true;
+  refreshRings(); setHUD();
+  camSnap = true;
+}
+function refreshRings() {
+  rings.forEach((r, i) => {
+    r.mesh.material = i === S.next ? ringNext : ringFuture;
+    r.mesh.visible = !r.done && i < S.next + 7;
+  });
+  const cur = rings[S.next];
+  ringFill.visible = !!cur;
+  if (cur) { ringFill.position.copy(cur.pos); ringFill.quaternion.copy(cur.mesh.quaternion); }
+}
+
+/* ------------------------------------------------------------ flow / overlays */
+const game = PA.loop(update);
+function modeSeg() {
+  return `<div class="pa-seg" role="group" aria-label="Mode">
+    <button data-m="course" aria-pressed="${S.course === "course"}">Course</button>
+    <button data-m="endless" aria-pressed="${S.course === "endless"}">Endless</button></div>`;
+}
+const pickMode = (e) => {
+  S.course = e.currentTarget.dataset.m; PA.store.set("glider:mode", S.course);
+  document.querySelectorAll("[data-m]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.m === S.course)));
+  const d = document.querySelector("[data-desc]"); if (d) d.textContent = modeDesc();
+};
+const modeDesc = () => S.course === "course"
+  ? `Course: ${COURSE_RINGS} rings, the clock counts up — fastest time wins (missed rings add 3s).`
+  : "Endless: 60 seconds on the clock, every ring adds 2s — score is rings passed.";
+const focusPrimary = () => setTimeout(() => document.querySelector(".pa-overlay [data-play], .pa-overlay [data-again]")?.focus({ preventScroll: true }), 60);
+const galleryBtn = `<a class="pa-btn ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="../index.html#glider">Back to gallery</a>`;
+function startMenu() {
+  S.mode = "menu"; game.pause();
+  PA.overlay(`<div class="pa-eyebrow">Flight · Ring run</div>
+    <h1>Paper Glider</h1>
+    <p>Ride the golden-hour breeze over the valley and thread your paper glider through the glowing rings.</p>
+    ${modeSeg()}
+    <p data-desc style="font-size:13px;margin-top:-6px">${modeDesc()}</p>
+    <div class="pa-keys">
+      <kbd>← → / A D</kbd><span>Bank and turn</span>
+      <kbd>↑ ↓ / W S</kbd><span>Climb / dive (diving builds speed)</span>
+      <kbd>Space</kbd><span>Boost — meter refills slowly</span>
+      <kbd>Mouse drag</kbd><span>Steer like a joystick</span>
+      <kbd>Esc / P</kbd><span>Pause</span>
+      <kbd>Touch</kbd><span>On phones: drag the stick (or anywhere) to steer, hold Boost</span>
+    </div>
+    <p style="font-size:13px">Glowing columns are updrafts — fly through them to gain height. Don't touch the ground!</p>
+    <div class="pa-actions"><button class="pa-btn" data-play>Play</button></div>`,
+  { "[data-m]": pickMode, "[data-play]": startRun });
+  focusPrimary();
+}
+function startRun() {
+  PA.closeOverlay(); resetRun(); S.mode = "play"; game.resume();
+  PA.music({ bpm: 92, root: 196, wave: "sine", lead: [7, null, 12, null, 9, 7, null, 4, 5, null, 9, null, 7, null, null, null], bass: [0, null, null, null, 5, null, null, null, 3, null, null, null, 7, null, null, null] });
+  PA.toast(S.course === "course" ? "Fly through all 30 rings!" : "60 seconds — go!");
+}
+function togglePause() {
+  if (S.mode !== "play" || S.crash) return;
+  if (PA.overlayOpen()) { PA.closeOverlay(); game.resume(); return; }
+  game.pause();
+  PA.overlay(`<div class="pa-eyebrow">Paused</div><h2>Hovering…</h2>
+    <p>${S.course === "course" ? `Ring ${S.next + 1} of ${COURSE_RINGS} · ${fmt(S.time)}` : `${S.passed} rings · ${Math.ceil(S.left)}s left`}</p>
+    <div class="pa-actions"><button class="pa-btn" data-resume>Resume</button><button class="pa-btn ghost" data-restart>Restart</button>${galleryBtn}</div>`,
+  { "[data-resume]": () => { PA.closeOverlay(); game.resume(); }, "[data-restart]": () => { PA.stopMusic(); startMenu(); } });
+}
+bar.onPause(togglePause);
+function endRun(kind) { // "finish" | "timeup" | "crash"
+  S.mode = "over"; game.pause(); PA.stopMusic(); arrow.style.display = tag.style.display = "none";
+  let eyebrow, title, big, lines = [];
+  if (S.course === "course") {
+    if (kind === "finish") {
+      const total = S.time + S.missed * 3, b = PA.best("glider:course", +total.toFixed(1), false);
+      eyebrow = "Course complete"; title = S.missed ? "Soft landing!" : "Perfect run!"; big = fmt(total);
+      lines.push(`${S.passed} of ${COURSE_RINGS} rings${S.missed ? ` · ${S.missed} missed (+${S.missed * 3}s)` : ""}`);
+      lines.push(`Best time: ${fmt(b.best)}${b.isNew ? " — new best!" : ""}`);
+      PA.sfx("win");
+    } else {
+      eyebrow = "Crash landing"; title = "Grounded!"; big = `${S.passed}/${COURSE_RINGS}`;
+      lines.push("Your glider touched down before the finish — no time recorded.");
+      const best = PA.store.get("best:glider:course", null); if (best != null) lines.push(`Best time: ${fmt(best)}`);
+      PA.sfx("fail");
+    }
+  } else {
+    const b = PA.best("glider:endless", S.passed, true);
+    eyebrow = kind === "crash" ? "Crash landing" : "Time's up"; title = kind === "crash" ? "Grounded!" : "What a flight!";
+    big = `${S.passed} ring${S.passed === 1 ? "" : "s"}`;
+    lines.push(`Best: ${b.best} rings${b.isNew ? " — new best!" : ""}`);
+    PA.sfx(kind === "crash" ? "fail" : "win");
+  }
+  PA.overlay(`<div class="pa-eyebrow">${eyebrow}</div><h2>${title}</h2><div class="pa-big-score">${big}</div>
+    ${lines.map((l) => `<p>${l}</p>`).join("")}${modeSeg()}
+    <div class="pa-actions"><button class="pa-btn" data-again>Play again</button>${galleryBtn}</div>`,
+  { "[data-m]": pickMode, "[data-again]": startRun });
+  focusPrimary();
+}
+
+/* ------------------------------------------------------------ flight */
+const fwd = new V3(), tmp = new V3(), up = new V3(0, 1, 0);
+function inputs() {
+  if (AUTO) return autopilot();
+  const k = PA.keys;
+  let ix = (k.has("ArrowRight") || k.has("KeyD") ? 1 : 0) - (k.has("ArrowLeft") || k.has("KeyA") ? 1 : 0);
+  let iy = (k.has("ArrowUp") || k.has("KeyW") ? 1 : 0) - (k.has("ArrowDown") || k.has("KeyS") ? 1 : 0);
+  ix += PA.axis.x; iy -= PA.axis.y;
+  if (drag) { ix += drag.dx; iy -= drag.dy; }
+  return { ix: clamp(ix, -1, 1), iy: clamp(iy, -1, 1), boost: k.has("Space") };
+}
+function autopilot() {
+  const r = rings[S.next]; if (!r) return { ix: 0, iy: 0, boost: false };
+  const aim = r.pos.clone().addScaledVector(r.n, -6);
+  const d = aim.sub(F.pos), want = Math.atan2(-d.x, -d.z);
+  let err = want - F.yaw; err = Math.atan2(Math.sin(err), Math.cos(err));
+  return { ix: clamp(-err * 3, -1, 1), iy: clamp((r.pos.y - F.pos.y) * 0.12 + 0.15, -1, 1), boost: F.speed < 20 };
+}
+function fly(dt) {
+  const { ix, iy, boost } = inputs();
+  // bank toward input, auto-level when released; banking turns the glider
+  F.roll += (ix * 0.95 - F.roll) * Math.min(1, dt * 3);
+  F.yaw -= Math.sin(F.roll) * 1.05 * dt;
+  F.pitch += (iy * 0.5 - 0.06 - F.pitch) * Math.min(1, dt * 2.2);
+  // energy: diving speeds up, climbing bleeds speed; boost adds thrust
+  const boosting = boost && S.boost > 0.02;
+  S.boost = clamp(S.boost + (boosting ? -0.42 : 0.075) * dt, 0, 1);
+  F.speed += (-9.8 * Math.sin(F.pitch) * 0.9 + (24 - F.speed) * 0.25 + (boosting ? 26 : 0)) * dt;
+  F.speed = clamp(F.speed, 11, 50);
+  if (boosting && Math.random() < 0.4) puff();
+  fwd.set(-Math.sin(F.yaw) * Math.cos(F.pitch), Math.sin(F.pitch), -Math.cos(F.yaw) * Math.cos(F.pitch));
+  // sink grows when slow (stall); updrafts push up
+  let lift = 0;
+  for (const u of updrafts) {
+    if (!u.active) continue;
+    const dx = F.pos.x - u.pos.x, dz = F.pos.z - u.pos.z, d = Math.hypot(dx, dz);
+    if (d < UP_R * 1.15 && F.pos.y < u.pos.y + u.top + 6) lift = Math.max(lift, 15 * Math.sqrt(1 - Math.min(1, d / (UP_R * 1.15))));
+  }
+  if (lift > 0 && F.lift === 0 && !AUTO) PA.sfx("whoosh");
+  F.lift = lift;
+  const sink = 2.0 + Math.max(0, 17 - F.speed) * 0.6;
+  F.vel.copy(fwd).multiplyScalar(F.speed); F.vel.y += lift - sink;
+  F.prev.copy(F.pos); F.pos.addScaledVector(F.vel, dt);
+  if (F.pos.y > 190) F.pos.y = 190;
+  glider.position.copy(F.pos);
+  glider.rotation.set(F.pitch + lift * 0.01, F.yaw, -F.roll);
+  return boosting;
+}
+function puff() { const b = bits[confI = (confI + 1) % CONF]; b.p.copy(F.pos).addScaledVector(fwd, -1.6); b.v.copy(fwd).multiplyScalar(-4).add(new V3(rand(-1, 1), rand(-1, 1), rand(-1, 1))); b.w.set(rand(-6, 6), rand(-6, 6), 0); b.life = 0.5; }
+
+function checkRings() {
+  const r = rings[S.next]; if (!r) return;
+  const s0 = tmp.subVectors(F.prev, r.pos).dot(r.n), s1 = tmp.subVectors(F.pos, r.pos).dot(r.n);
+  if (s0 < 0 && s1 >= 0) {
+    const off = tmp.subVectors(F.pos, r.pos).addScaledVector(r.n, -s1).length();
+    if (off < RING_R + 0.3) {
+      r.done = true; r.anim = 0.01; S.passed++; S.next++;
+      PA.sfx("ring"); burst(r.pos);
+      if (S.course === "endless") { S.left += 2; PA.toast("+2s", 700); }
+    } else if (off < 45) {
+      r.done = true; r.mesh.visible = false; S.missed++; S.next++;
+      if (!AUTO) { PA.sfx("thud"); PA.toast(S.course === "course" ? "Missed a ring · +3s" : "Missed a ring", 1100); }
+    } else return;
+    if (S.course === "endless") while (rings.length < S.next + 8) pushRing();
+    refreshRings(); setHUD();
+    if (S.course === "course" && S.next >= COURSE_RINGS && S.mode === "play") endRun("finish");
+  }
+}
+function checkCrash() {
+  const g = H(F.pos.x, F.pos.z);
+  let hit = F.pos.y < g + 0.7 ? "ground" : F.pos.y < WATER + 0.4 ? "water" : null;
+  for (const w of windmills) if (Math.hypot(F.pos.x - w.g.position.x, F.pos.z - w.g.position.z) < 2.8 && F.pos.y < w.base + 18) hit = "ground";
+  if (!hit) return;
+  S.crash = { t: 0, v: F.vel.clone().multiplyScalar(0.35), spin: new V3(rand(3, 6), rand(-4, 4), rand(4, 8)) };
+  F.pos.y = Math.max(F.pos.y, Math.max(g, WATER) + 0.3);
+  PA.sfx(hit === "water" ? "splash" : "thud"); PA.toast(hit === "water" ? "Splashdown!" : "Crash!", 1400);
+  burst(F.pos, 24, 5); drag = null; dragUI.style.display = "none";
+}
+function tumble(dt) {
+  const c = S.crash; c.t += dt;
+  c.v.y -= 9.8 * dt; c.v.multiplyScalar(1 - dt * 1.5);
+  F.pos.addScaledVector(c.v, dt);
+  const floor = Math.max(H(F.pos.x, F.pos.z), WATER) + 0.25;
+  if (F.pos.y < floor) { F.pos.y = floor; c.v.y = Math.abs(c.v.y) * 0.3; c.spin.multiplyScalar(0.92); }
+  glider.position.copy(F.pos);
+  glider.rotation.x += c.spin.x * dt; glider.rotation.y += c.spin.y * dt; glider.rotation.z += c.spin.z * dt;
+  if (c.t > 1.7 && S.mode === "play") endRun("crash");
+}
+
+/* ------------------------------------------------------------ per-frame */
+let camSnap = true, readyT = 0;
+const camPos = new V3(), camLook = new V3(), mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new V3();
+const REPS = PA.params.has("auto") ? 4 : 1; // ?auto fast-forwards for automated testing
+PA.onResize(() => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.fov = camera.aspect < 0.8 ? 74 : 62; camera.updateProjectionMatrix(); });
+
+function update(dt, t) {
+  if (dt > 0) for (let i = 0; i < REPS; i++) simulate(dt, t);
+  draw(dt, t);
+}
+function simulate(dt, t) {
+  if (S.mode === "play" || S.mode === "demo") {
+    if (S.crash) tumble(dt);
+    else {
+      const boosting = fly(dt);
+      checkRings(); checkCrash();
+      hud.classList.toggle("low", S.boost < 0.05);
+      hud.querySelector("i").style.transform = `scaleX(${S.boost})`;
+      hud.querySelector("[data-spd]").textContent = `${Math.round(F.speed * 3.6)} km/h${boosting ? " ▲" : ""}`;
+      if (S.mode === "play") {
+        if (S.course === "course") S.time += dt; else { S.left -= dt; if (S.left <= 0) { S.left = 0; setHUD(); endRun("timeup"); return; } }
+        setHUD();
+      }
+    }
+  }
+  // world animation
+  for (const w of windmills) w.hub.rotation.z += w.speed * dt;
+  for (const c of clouds) { c.position.x += 2.2 * dt; if (c.position.x > 480) c.position.x = -480; }
+  for (const r of rings) if (r.anim > 0) { r.anim += dt * 2.5; r.mesh.scale.setScalar(1 + r.anim * 0.8); if (r.anim > 1) { r.anim = 0; r.mesh.visible = false; } }
+  for (const u of updrafts) {
+    if (!u.active) continue;
+    const a = u.pts.geometry.attributes.position;
+    u.seed.forEach((s, i) => {
+      s.y = (s.y + dt * 0.12 * s.s) % 1; s.a += dt * 0.6;
+      a.setXYZ(i, u.pos.x + Math.cos(s.a) * s.r, u.pos.y + s.y * u.top, u.pos.z + Math.sin(s.a) * s.r);
+    });
+    a.needsUpdate = true;
+  }
+  for (let i = 0; i < CONF; i++) {
+    const b = bits[i]; if (b.life <= 0) continue;
+    b.life -= dt; b.v.y -= 6 * dt; b.v.multiplyScalar(1 - dt * 1.2); b.p.addScaledVector(b.v, dt);
+    b.r.x += b.w.x * dt; b.r.y += b.w.y * dt; b.r.z += b.w.z * dt;
+    const s = b.life > 0 ? Math.min(1, b.life * 2) : 0;
+    confetti.setMatrixAt(i, mtx.compose(b.p, q.setFromEuler(b.r), sc.set(s, s, s)));
+  }
+  confetti.instanceMatrix.needsUpdate = true;
+}
+function draw(dt, t) {
+  // chase camera: behind and above, smoothed, with a hint of roll
+  const back = new V3(-Math.sin(F.yaw), 0, -Math.cos(F.yaw));
+  const want = F.pos.clone().addScaledVector(back, -10).add(new V3(0, 3.6 - F.pitch * 4, 0));
+  const gh = H(want.x, want.z) + 1.5; if (want.y < gh) want.y = gh;
+  const lookAt = F.pos.clone().addScaledVector(back, S.crash ? 0 : 9).add(new V3(0, 1, 0));
+  const k = camSnap ? 1 : 1 - Math.exp(-(S.crash ? 1.5 : 4.5) * (dt || 0.016));
+  camPos.lerp(want, k); camLook.lerp(lookAt, camSnap ? 1 : 1 - Math.exp(-8 * (dt || 0.016))); camSnap = false;
+  camera.position.copy(camPos);
+  const right = new V3(Math.cos(F.yaw), 0, -Math.sin(F.yaw));
+  camera.up.copy(up).addScaledVector(right, S.crash ? 0 : Math.sin(F.roll) * 0.22).normalize();
+  camera.lookAt(camLook);
+  skyMesh.position.copy(camera.position);
+  // shadows follow the glider
+  sunLight.position.copy(F.pos).addScaledVector(sunDir, 250); sunLight.target.position.copy(F.pos);
+  // next ring pulse
+  ringNext.emissiveIntensity = 0.9 + Math.sin(t * 6) * 0.35;
+  indicator();
+  renderer.render(scene, camera);
+  if (PA.THUMB && !window.__ready) {
+    readyT = readyT || t; const el = t - readyT, r = rings[S.next];
+    const d = r ? r.pos.distanceTo(F.pos) : 0;
+    if ((el > 2 && d > 20 && d < 55) || el > 9) window.__ready = true;
+  }
+}
+// arrow at the screen edge pointing to the next ring when it is off-screen
+const prj = new V3();
+function indicator() {
+  const r = rings[S.next];
+  if (!r || S.mode !== "play" || S.crash || PA.overlayOpen()) { arrow.style.display = tag.style.display = "none"; return; }
+  prj.copy(r.pos).project(camera);
+  const behind = prj.z > 1; let x = prj.x, y = prj.y;
+  if (behind) { x = -x; y = -y; }
+  const W = innerWidth, Hh = innerHeight, dist = Math.round(r.pos.distanceTo(F.pos));
+  if (!behind && Math.abs(x) < 0.92 && Math.abs(y) < 0.88) {
+    arrow.style.display = "none"; tag.style.display = "block";
+    tag.textContent = `${dist} m`;
+    const sy = (1 - (prj.copy(r.pos).add(new V3(0, RING_R + 1.5, 0)).project(camera).y)) / 2 * Hh;
+    tag.style.left = ((x + 1) / 2 * W) + "px"; tag.style.top = sy + "px";
+    return;
+  }
+  tag.style.display = "none"; arrow.style.display = "block";
+  const ang = Math.atan2(-y, x), m = 34, top = 70;
+  const cx = W / 2, cy = Hh / 2 + top / 2, hw = W / 2 - m, hh = (Hh - top) / 2 - m;
+  const s = Math.min(hw / Math.abs(Math.cos(ang) || 1e-6), hh / Math.abs(Math.sin(ang) || 1e-6));
+  arrow.style.transform = `translate(${cx + Math.cos(ang) * s}px,${cy + Math.sin(ang) * s}px) rotate(${ang}rad)`;
+}
+
+/* ------------------------------------------------------------ boot */
+if (PA.params.has("auto")) window.__gl = () => ({ mode: S.mode, next: S.next, passed: S.passed, missed: S.missed, crash: !!S.crash, y: +F.pos.y.toFixed(1), left: +S.left.toFixed(1) }); // test hook
+if (PA.THUMB) {
+  // jump to the stretch of course that heads into the sunset, then let the autopilot fly
+  S.course = "course"; resetRun(); S.mode = "demo";
+  const i0 = 11; for (let i = 0; i < i0; i++) rings[i].done = true;
+  S.next = S.passed = i0;
+  const th = rings[i0].th - 0.3, p = pathPoint(th), tg = pathTangent(th);
+  F.pos.set(p.x, rings[i0].pos.y + 2, p.z); F.prev.copy(F.pos); F.yaw = Math.atan2(-tg.x, -tg.z);
+  refreshRings();
+  for (let i = 0; i < 40; i++) simulate(1 / 30, i / 30);
+  camSnap = true; game.resume();
+} else { resetRun(); bar.setScore(""); startMenu(); }
+</script></body></html>
