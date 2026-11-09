@@ -22,9 +22,9 @@ const STOPS = [
     desc: "Clear a weedy acre, grow ten crops through four seasons, feed hens and a cow, and befriend three neighbors who speak Japanese with English subtitles.",
     spec: [["Engine", "Three.js r169"], ["Play", "1 player · saves in your browser"], ["Controls", "Keyboard, mouse or touch"]],
     jp: "牧場に着きましたよ。", en: "Here's the farm." },
-  { id: "glider", z: -165, hour: 14.6, area: "Hilltop Meadows", title: "Paper Glider", genre: "Flight", href: "games/glider.html", cta: "Fly", thumb: "img/thumb-glider.jpg",
-    desc: "Thread golden rings over patchwork fields and windmills. Ride the updrafts, save your boost, and keep clear of the hills.",
-    spec: [["Engine", "Three.js r169"], ["Modes", "Course or Endless"], ["Controls", "Arrows, mouse drag or touch"]],
+  { id: "ironrift", z: -165, hour: 14.6, area: "Hilltop Meadows", title: "Iron Rift", genre: "First-person shooter", href: "games/ironrift.html", cta: "Deploy", thumb: "img/thumb-ironrift.jpg",
+    desc: "Hold a rain-slick container terminal at sunset against masked mercenaries, white robots, turret hounds and powered exos — eight waves, a three-phase boss, and a six-bot free-for-all.",
+    spec: [["Engine", "Three.js r169"], ["Modes", "Onslaught (8 waves + boss) · Deathmatch"], ["Controls", "Keyboard & mouse, gamepad or touch"]],
     jp: "風が気持ちいいですね。", en: "Nice breeze up here." },
   { id: "paddle", z: -232, hour: 17.5, area: "Hilltop Meadows", title: "Paddle Duel", genre: "Sports vs CPU", href: "games/paddle.html", cta: "Serve", thumb: "img/thumb-paddle.jpg",
     desc: "Table tennis against Patch the scarecrow on a barn porch at sunset. First to five. Swing the paddle to put spin on the ball.",
@@ -34,9 +34,9 @@ const STOPS = [
     desc: "Deliver parcels across a rainy market town. Jump the gaps, slide under laundry lines and double-jump the chimneys.",
     spec: [["Engine", "Three.js r169"], ["Play", "1 player · endless"], ["Controls", "Arrows or swipe"]],
     jp: "雨ですね。気をつけて！", en: "Rainy tonight. Watch your step!" },
-  { id: "rally", z: -402, hour: 22.6, area: "Moon Road", title: "Moonlit Rally", genre: "Racing", href: "games/rally.html", cta: "Drive", thumb: "img/thumb-rally.jpg",
-    desc: "Take a farm pickup down a winding moonlit lane. Grab firefly jars and scrape past sheep and hay bales to fill your boost.",
-    spec: [["Engine", "Three.js r169"], ["Modes", "Sprint or Endless"], ["Controls", "Arrows, stick or touch"]],
+  { id: "canyon", z: -402, hour: 22.6, area: "Moon Road", title: "Canyon Circuit", genre: "Arcade stunt racing", href: "games/canyon.html", cta: "Race", thumb: "img/thumb-canyon.jpg",
+    desc: "Race glossy supercars through two red-rock tracks — golden-hour Red Rock Run and violet Dusk Mesa. Chain drifts, ride the walls, fly the gaps and out-drive two AI rivals, or a friend in split-screen.",
+    spec: [["Engine", "Three.js r169"], ["Tracks", "Red Rock Run · Dusk Mesa"], ["Play", "Solo vs 2 AI · 2P split-screen · time trial"], ["Controls", "Keyboard & mouse, gamepads or touch"]],
     jp: "今夜は月が明るいですね。", en: "The moon is bright tonight." },
   { id: "workshop", z: -482, hour: 23.5, area: "The Workshop", kind: "soon", title: "In the Workshop", genre: "Games being built",
     desc: "Under these covers are the next games on the line. They'll get their own stops when they're ready.",
@@ -62,7 +62,9 @@ function frameAt(s) {
   const p = curve.getPointAt(u), t = curve.getTangentAt(u).normalize(), r = new THREE.Vector3().crossVectors(t, UP).normalize();
   return { p, t, r };
 }
-const sOfZ = (z) => uOfZ(z) * L;
+// uOfZ scans 3000 curve samples, and scenery placement asks for the same z values many times — memoize.
+const sCache = new Map();
+const sOfZ = (z) => { let v = sCache.get(z); if (v === undefined) { v = uOfZ(z) * L; sCache.set(z, v); } return v; };
 
 /* ================================================================ renderer */
 const canvas = $("world");
@@ -194,7 +196,7 @@ leaves.forEach((l, i) => instanced(new THREE.IcosahedronGeometry(0.9, 0), leafMa
 // fences (Homestead + Moon Road)
 const posts = [], rails = [];
 function fenceRun(z0, z1, side) {
-  for (let s = sOfZ(z0); s < sOfZ(z1); s += 3) {
+  for (let s = sOfZ(z0), end = sOfZ(z1); s < end; s += 3) {
     const { p, t, r } = frameAt(s); const x = p.x + r.x * side, z = p.z + r.z * side, ry = Math.atan2(t.x, t.z);
     posts.push({ x, y: 0.45, z });
     for (const y of [0.35, 0.72]) rails.push({ x: x + t.x * 1.5, y, z: z + t.z * 1.5, ry });
@@ -250,7 +252,7 @@ instanced(new THREE.IcosahedronGeometry(0.32, 1), lampMat, lampPos.map((p) => ({
   box(0.12, 2.6, 0.12, "#8a5a2f", 0, 1.3, 0, crow); box(2.2, 0.12, 0.12, "#8a5a2f", 0, 2, 0, crow); box(0.9, 1, 0.4, "#3f6fb5", 0, 1.9, 0, crow);
   add(new THREE.IcosahedronGeometry(0.38, 1), mat("#e3c08a"), 0, 2.75, 0, crow); add(new THREE.CylinderGeometry(0.7, 0.7, 0.08, 12), mat("#e9c46a"), 0, 3.05, 0, crow);
 }
-// --- Hilltop Meadows: windmills, rings, gliders, porch with a ping-pong table
+// --- Hilltop Meadows: windmills, a container stack for Iron Rift, porch with a ping-pong table
 const blades = [], gliders = [];
 for (const [z, side] of [[-140, -30], [-188, 34], [-205, -44], [-250, 40]]) {
   const g = new THREE.Group(); const f = frameAt(sOfZ(z)); g.position.copy(f.p).addScaledVector(f.r, side); g.position.y = groundY(g.position.x, g.position.z); scene.add(g);
@@ -262,14 +264,10 @@ for (const [z, side] of [[-140, -30], [-188, 34], [-205, -44], [-250, 40]]) {
 }
 const ringMat = new THREE.MeshStandardMaterial({ color: "#f4c04a", emissive: "#f4a63a", emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.4 });
 const ringCenter = (() => { const f = frameAt(STOPS[2].s + 34); return f.p.clone().addScaledVector(f.r, -20).setY(9); })();
-for (let i = 0; i < 6; i++) {
-  const a = i / 6 * Math.PI * 2, rg = add(geo("ring", () => new THREE.TorusGeometry(1.6, 0.18, 6, 22)), ringMat, ringCenter.x + Math.cos(a) * 14, 7 + Math.sin(a * 2) * 2.5, ringCenter.z + Math.sin(a) * 14, scene, true);
-  rg.rotation.y = -a;
-}
-for (let i = 0; i < 2; i++) {
-  const g = new THREE.Group(); scene.add(g);
-  const wing = add(new THREE.ConeGeometry(0.9, 2.2, 3), mat("#fff8ec"), 0, 0, 0, g); wing.rotation.x = Math.PI / 2; wing.scale.set(1, 1, 0.12);
-  gliders.push({ g, ph: i * Math.PI });
+{ // Iron Rift: a small stack of shipping containers and a dock lamp beside the stop
+  const yard = new THREE.Group(); beside(yard, STOPS[2].s + 22, -17); scene.add(yard);
+  box(6.1, 2.6, 2.44, "#8e3b2a", 0, 1.3, 0, yard); box(6.1, 2.6, 2.44, "#3f6a4a", 0, 1.3, 2.6, yard); box(6.1, 2.6, 2.44, "#2c4f7c", 0.4, 3.9, 1.3, yard);
+  box(0.25, 7.5, 0.25, "#d8d4cb", 4.2, 3.75, 1.3, yard); box(1.4, 0.35, 0.6, "#ffc58a", 4.2, 7.5, 1.3, yard); box(2.2, 0.9, 0.5, "#9a968e", -4.4, 0.45, 1.3, yard);
 }
 {
   const porch = new THREE.Group(); beside(porch, STOPS[3].s + 16, 15); scene.add(porch);

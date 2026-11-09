@@ -157,13 +157,16 @@ const outerMat = new THREE.MeshStandardMaterial({ color: GRASS[0][1], roughness:
 const outer = mesh(new THREE.PlaneGeometry(240, 240), outerMat, W / 2, -0.02, H / 2, scene, false); outer.rotation.x = -Math.PI / 2;
 
 /* ================================================================ scenery */
-const leafMats = [mat("#5fae5a"), mat("#3f8f45"), mat("#f2a7c3")];
 const LEAVES = [
   ["#5fae5a", "#46994a", "#f2a7c3"],
   ["#3f8f45", "#2f7a3c", "#57a64e"],
   ["#e0823a", "#d4552f", "#e9b13c"],
   ["#e9eef5", "#cfdbe8", "#b9cce0"],
 ];
+// Seasonal materials are recoloured in applySeason(), so they must not come from the shared
+// mat() cache — otherwise anything else using the same colour (e.g. pink butterflies) changes too.
+const ownMat = (color) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.85 });
+const leafMats = LEAVES[0].map(ownMat);
 const trunkGeo = new THREE.CylinderGeometry(0.09, 0.14, 0.7, 6);
 const blobGeo = new THREE.IcosahedronGeometry(0.5, 0);
 const treeSpots = [];
@@ -204,7 +207,7 @@ const hills = scene.children.filter((o) => o.userData.hill);
 const tuftSpots = [];
 seedR = 41;
 for (let z = 1; z < H - 1; z++) for (let x = 1; x < W - 1; x++) if (at(x, z) === "." && rnd() < 0.5) tuftSpots.push([x + rnd(), z + rnd(), 0.6 + rnd() * 0.7]);
-const tuftMat = mat("#6db35c");
+const tuftMat = ownMat(GRASS[0][1]);
 const tufts = new THREE.InstancedMesh(new THREE.ConeGeometry(0.06, 0.22, 3), tuftMat, tuftSpots.length * 3);
 {
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(); let n = 0;
@@ -742,7 +745,6 @@ function useHoe(x, z) {
     if (t.obj) { if (t.obj === "stone") burst(tx + 0.5, 0.2, tz + 0.5, "#9a94aa", 10); else burst(tx + 0.5, 0.2, tz + 0.5, "#4f8f3a", 8); t.obj = null; did = true; }
     else if (t.crop?.dead) { t.crop = null; did = true; }
     else if (!t.crop && !t.till) {
-      if (S.season === 3 && false) continue;
       t.till = 1; if (S.weather !== "sun") t.wet = 1; stat("tilled"); did = true; burst(tx + 0.5, 0.1, tz + 0.5, "#8c5a3a", 6, 1.2, 1.6);
     }
     refreshTile(tx, tz, true);
@@ -797,7 +799,7 @@ function feedAnimals() {
   const have = S.inv.fodder || 0;
   if (!have) { PA.toast("No fodder left. Mina sells it for 10 G."); PA.sfx("fail"); return; }
   const n = Math.min(have, hungry.length);
-  for (let i = 0; i < n; i++) { hungry[i].fed = true; if (hungry[i].kind === "cow") hungry[i].milkReady = hungry[i].milkReady; }
+  for (let i = 0; i < n; i++) hungry[i].fed = true; // a fed cow gives milk the next morning (see endDay)
   S.inv.fodder -= n; if (!S.inv.fodder) delete S.inv.fodder;
   hay.visible = true; swing(); PA.sfx("thud"); PA.sfx("cluck");
   PA.toast(n === hungry.length ? `Fed all ${n} animals.` : `Fed ${n} of ${hungry.length}. Buy more fodder at Mina's.`);
