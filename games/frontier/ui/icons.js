@@ -1,0 +1,36 @@
+// Frontier Crown — inline SVG icons (24×24, currentColor strokes/fills).
+
+const s = (body, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true" ${extra}>${body}</svg>`;
+
+export const ICON = {
+  food: s(`<path d="M12 21c-4 0-7-3-7-7 0-3 2-5 4-6-1-2 0-4 3-5 0 2 1 3 2 4 3 1 5 4 5 7 0 4-3 7-7 7z" fill="#d9483b"/><path d="M12 3c1 2 3 3 5 3" stroke="#5a8a3a" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="9.5" cy="13" r="1.4" fill="#fff" opacity=".55"/>`),
+  wood: s(`<rect x="3" y="12" width="18" height="6" rx="3" fill="#9a6a3c"/><rect x="5" y="6" width="16" height="6" rx="3" fill="#b07b47"/><circle cx="19" cy="9" r="2.4" fill="#e3c08a"/><circle cx="19" cy="9" r="1" fill="#b07b47"/><circle cx="18.5" cy="15" r="2.4" fill="#d9b57e"/>`),
+  coin: s(`<circle cx="12" cy="12" r="8.5" fill="#e9b93a" stroke="#a8791a" stroke-width="1.5"/><circle cx="12" cy="12" r="5.4" fill="none" stroke="#fff3c4" stroke-width="1.3" opacity=".8"/><path d="M12 8.6v6.8M10 10.2c0-1 4-1 4 .4s-4 1.2-4 2.6 4 1.4 4 .2" stroke="#8a6012" stroke-width="1.2" fill="none"/>`),
+  pop: s(`<circle cx="12" cy="7" r="3.4" fill="#e7ddc9"/><path d="M5 21c0-4.5 3-7.5 7-7.5s7 3 7 7.5z" fill="#e7ddc9"/>`),
+  villager: s(`<ellipse cx="12" cy="6.5" rx="6.5" ry="1.6" fill="#d8b05c"/><rect x="9" y="3" width="6" height="3.6" rx="1.4" fill="#d8b05c"/><circle cx="12" cy="9.2" r="2.8" fill="#e7b98f"/><path d="M6.5 21v-5.5c0-2.4 2.4-3.8 5.5-3.8s5.5 1.4 5.5 3.8V21z" fill="currentColor"/><path d="M18 9l3 6" stroke="#8a5a2f" stroke-width="1.6"/><path d="M19.5 8.5l2.5 1.5-1 1.6" fill="#c9ccd1"/>`),
+  musketeer: s(`<path d="M6 7.5l6-3 6 3-6 1.2z" fill="#1d1b1b"/><circle cx="12" cy="10" r="2.7" fill="#e7b98f"/><path d="M6.8 21v-5.6c0-2.4 2.3-3.6 5.2-3.6s5.2 1.2 5.2 3.6V21z" fill="currentColor"/><path d="M8 13l8 8M16 13l-8 8" stroke="#f2ecdf" stroke-width="1.1"/><path d="M19 2.5v18" stroke="#6a4628" stroke-width="1.8"/><path d="M19 2.5v6" stroke="#bcc2ca" stroke-width="1.2"/>`),
+  pikeman: s(`<path d="M7.5 9c0-3 2-4.6 4.5-4.6S16.5 6 16.5 9z" fill="#b8bec6"/><path d="M6 9h12" stroke="#b8bec6" stroke-width="1.4"/><circle cx="12" cy="10.8" r="2.4" fill="#e7b98f"/><path d="M7 21v-5c0-2.3 2.2-3.4 5-3.4s5 1.1 5 3.4v5z" fill="#b8bec6"/><path d="M8.5 21v-3h7v3z" fill="currentColor"/><path d="M20 1.5v21" stroke="#6a4628" stroke-width="1.4"/><path d="M20 0.5l1.6 3.4h-3.2z" fill="#d6dbe0"/>`),
+  hussar: s(`<path d="M4 20c1-6 3-9 6-11l1-4 2 3c4 0 7 2 8 6l-3 1-2-2-2 1 1 6z" fill="#7a5434"/><circle cx="17.6" cy="11" r=".9" fill="#1d1b1b"/><path d="M9.5 9.5c-1 2-1 5 0 8" stroke="currentColor" stroke-width="2.4" fill="none"/><path d="M11 5l-1.4-3 2.6 1z" fill="#3d2a1b"/>`),
+  falconet: s(`<circle cx="8" cy="16" r="4.6" fill="none" stroke="#4a3020" stroke-width="2"/><circle cx="8" cy="16" r="1.1" fill="#4a3020"/><path d="M7 13.5L21 7.5l.9 2.4L8.2 16.4z" fill="#c9983e"/><path d="M3 21l7-4" stroke="#6a4628" stroke-width="2"/>`),
+  deer: s(`<path d="M6 21v-6l-2-1 1-4 5 1h7l2-4 2 1-1 4-2 2v7h-2v-5H9v5z" fill="#a87b4f"/><path d="M17 6l-2-4M18 5l1-3M19 5l3-2" stroke="#d9c9a8" stroke-width="1.2"/>`),
+  towncenter: s(`<path d="M2 21v-8l5-3.5 5 3.5v8z" fill="#eadfc8"/><path d="M1.5 13.2L7 9.2l5.5 4" stroke="#9a4330" stroke-width="1.8" fill="none"/><rect x="12" y="7" width="6" height="14" fill="#a0978a"/><path d="M11.4 7.2L15 3.6l3.6 3.6z" fill="#4f5763"/><path d="M15 3.8V0.8h4.2v2.4H15" fill="currentColor"/><rect x="18" y="12" width="4.5" height="9" fill="#eadfc8"/><rect x="5.6" y="16" width="2.8" height="5" fill="#4a2e1c"/><rect x="14" y="10" width="2" height="2.4" fill="#2c3540"/>`),
+  house: s(`<path d="M5 21v-9h14v9z" fill="#eadfc8"/><path d="M3 12.5L12 5l9 7.5" fill="#6b4636"/><rect x="10.5" y="15" width="3.5" height="6" fill="currentColor"/>`),
+  mill: s(`<path d="M9 21l1-11h4l1 11z" fill="#eadfc8"/><path d="M8.5 10.5L12 7l3.5 3.5z" fill="#7a4a33"/><path d="M12 9L5 2.5M12 9l7-6.5M12 9l-7 6.5M12 9l7 6.5" stroke="#4a3020" stroke-width="1.5"/><path d="M5 2.5l2.5 0.2-.2 2.5M19 2.5l-.2 2.5" stroke="#efe6d2" stroke-width="2.4"/>`),
+  barracks: s(`<path d="M3 21v-8h13v8z" fill="#a5573f"/><path d="M2 13.5L9.5 8l7.5 5.5" fill="#4f5763"/><rect x="7.5" y="16" width="4" height="5" fill="#3a2618"/><path d="M19 21V4" stroke="#4a3020" stroke-width="1.4"/><path d="M19.2 4h4v3.4h-4z" fill="currentColor"/>`),
+  stable: s(`<path d="M3 21v-9l9-6 9 6v9z" fill="#8a5a34"/><path d="M8.5 21v-6.5h7V21" fill="#4a2e1c"/><path d="M8.5 14.5l7 6.5M15.5 14.5l-7 6.5" stroke="#ece6d6" stroke-width="1"/><path d="M2 12.5l10-7 10 7" stroke="#5b3c2a" stroke-width="2" fill="none"/>`),
+  foundry: s(`<path d="M3 21v-9h12v9z" fill="#7b4a3a"/><rect x="16" y="4" width="4" height="17" fill="#a5573f"/><circle cx="18" cy="2.5" r="1.6" fill="#9aa1a8" opacity=".8"/><rect x="6" y="15" width="6" height="3" fill="#ff8a3a"/>`),
+  outpost: s(`<path d="M7 21V10M17 21V10M7 21l10-8M17 21L7 13" stroke="#4a3020" stroke-width="1.6"/><path d="M5.5 10h13v-2h-13z" fill="#6a4628"/><path d="M4 8l8-5 8 5z" fill="#c49a4f"/><path d="M15 3V0.5h3.5V2H15" fill="currentColor"/>`),
+  tree: s(`<path d="M12 2l6 9h-3l4 6H5l4-6H6z" fill="#3a6e40"/><rect x="11" y="17" width="2" height="5" fill="#5a3d27"/>`),
+  berries: s(`<circle cx="12" cy="13" r="7" fill="#3f6b33"/><circle cx="9" cy="11" r="1.6" fill="#c3263c"/><circle cx="14" cy="10" r="1.6" fill="#c3263c"/><circle cx="12" cy="15" r="1.6" fill="#c3263c"/><circle cx="16" cy="14" r="1.6" fill="#c3263c"/>`),
+  goldmine: s(`<path d="M2 21l5-10 4 3 3-6 8 13z" fill="#8c8276"/><circle cx="9" cy="17" r="1.6" fill="#efc443"/><circle cx="14" cy="15" r="1.3" fill="#efc443"/><circle cx="16.5" cy="18" r="1.6" fill="#efc443"/>`),
+  age: s(`<path d="M3 18l1.5-10 4.5 4 3-7 3 7 4.5-4L21 18z" fill="#e9b93a" stroke="#8a6012" stroke-width="1"/><rect x="3" y="18.5" width="18" height="2.6" rx="1" fill="#c9983e"/>`),
+  stop: s(`<rect x="6" y="6" width="12" height="12" rx="1.5" fill="#d9483b"/>`),
+  amove: s(`<path d="M5 19L17 7M14 4l6 0 0 6" stroke="#f2ecdf" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M4 16l4 4" stroke="#d9483b" stroke-width="2.2" stroke-linecap="round"/>`),
+  del: s(`<path d="M6 7h12l-1 14H7z" fill="#8b8f96"/><path d="M4 7h16M9 7V4h6v3" stroke="#d6dbe0" stroke-width="1.6" fill="none"/>`),
+  build: s(`<path d="M4 20l9-9" stroke="#8a5a2f" stroke-width="2.6" stroke-linecap="round"/><path d="M11 6l5-3 5 5-3 5z" fill="#c9ccd1"/>`),
+  back: s(`<path d="M15 5l-7 7 7 7" stroke="#f2ecdf" stroke-width="2.4" fill="none" stroke-linecap="round"/>`),
+  idle: s(`<circle cx="12" cy="9" r="3" fill="#e7b98f"/><path d="M6.5 21v-5c0-2.4 2.4-3.8 5.5-3.8s5.5 1.4 5.5 3.8v5z" fill="#d8b05c"/><path d="M15.5 3.5h4l-4 4h4" stroke="#f2ecdf" stroke-width="1.4" fill="none"/>`),
+  sword: s(`<path d="M5 19L18 6l1-3-3 1L3 17zM4 15l5 5" stroke="#d6dbe0" stroke-width="1.8" fill="none"/>`),
+  shield: s(`<path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" fill="#8b8f96"/>`),
+  bow: s(`<circle cx="12" cy="12" r="8" fill="none" stroke="#d6dbe0" stroke-width="1.6"/><circle cx="12" cy="12" r="3.5" fill="none" stroke="#d6dbe0" stroke-width="1.6"/><circle cx="12" cy="12" r="1" fill="#d9483b"/>`),
+};

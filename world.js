@@ -26,9 +26,9 @@ const STOPS = [
     desc: "Hold a rain-slick container terminal at sunset against masked mercenaries, white robots, turret hounds and powered exos — eight waves, a three-phase boss, and a six-bot free-for-all.",
     spec: [["Engine", "Three.js r169"], ["Modes", "Onslaught (8 waves + boss) · Deathmatch"], ["Controls", "Keyboard & mouse, gamepad or touch"]],
     jp: "風が気持ちいいですね。", en: "Nice breeze up here." },
-  { id: "paddle", z: -232, hour: 17.5, area: "Hilltop Meadows", title: "Paddle Duel", genre: "Sports vs CPU", href: "games/paddle.html", cta: "Serve", thumb: "img/thumb-paddle.jpg",
-    desc: "Table tennis against Patch the scarecrow on a barn porch at sunset. First to five. Swing the paddle to put spin on the ball.",
-    spec: [["Engine", "Three.js r169"], ["Difficulty", "Easy, Normal, Hard"], ["Controls", "Mouse, arrows or touch"]],
+  { id: "frontier", z: -232, hour: 17.5, area: "Hilltop Meadows", title: "Frontier Crown", genre: "Real-time strategy", href: "games/frontier.html", cta: "Found a colony", thumb: "img/thumb-frontier.jpg",
+    desc: "Found a colony on a river frontier: gather food, wood and coin, rise through three Ages, raise musketeers, pikemen, hussars and cannon, and break the Rival Crown's Town Center.",
+    spec: [["Engine", "Three.js r169 · instanced ECS · heightmap terrain"], ["Mode", "Skirmish vs AI · 2 maps · Easy, Normal, Hard"], ["Controls", "Mouse & keyboard or touch"]],
     jp: "夕焼けがきれいですね。", en: "What a sunset." },
   { id: "rooftop", z: -312, hour: 20.2, area: "The Rain Quarter", title: "Rooftop Dash", genre: "Runner", href: "games/rooftop.html", cta: "Run", thumb: "img/thumb-rooftop.jpg",
     desc: "Deliver parcels across a rainy market town. Jump the gaps, slide under laundry lines and double-jump the chimneys.",
@@ -252,7 +252,7 @@ instanced(new THREE.IcosahedronGeometry(0.32, 1), lampMat, lampPos.map((p) => ({
   box(0.12, 2.6, 0.12, "#8a5a2f", 0, 1.3, 0, crow); box(2.2, 0.12, 0.12, "#8a5a2f", 0, 2, 0, crow); box(0.9, 1, 0.4, "#3f6fb5", 0, 1.9, 0, crow);
   add(new THREE.IcosahedronGeometry(0.38, 1), mat("#e3c08a"), 0, 2.75, 0, crow); add(new THREE.CylinderGeometry(0.7, 0.7, 0.08, 12), mat("#e9c46a"), 0, 3.05, 0, crow);
 }
-// --- Hilltop Meadows: windmills, a container stack for Iron Rift, porch with a ping-pong table
+// --- Hilltop Meadows: windmills, a container stack for Iron Rift, a frontier outpost for Frontier Crown
 const blades = [], gliders = [];
 for (const [z, side] of [[-140, -30], [-188, 34], [-205, -44], [-250, 40]]) {
   const g = new THREE.Group(); const f = frameAt(sOfZ(z)); g.position.copy(f.p).addScaledVector(f.r, side); g.position.y = groundY(g.position.x, g.position.z); scene.add(g);
@@ -270,14 +270,18 @@ const ringCenter = (() => { const f = frameAt(STOPS[2].s + 34); return f.p.clone
   box(0.25, 7.5, 0.25, "#d8d4cb", 4.2, 3.75, 1.3, yard); box(1.4, 0.35, 0.6, "#ffc58a", 4.2, 7.5, 1.3, yard); box(2.2, 0.9, 0.5, "#9a968e", -4.4, 0.45, 1.3, yard);
 }
 {
-  const porch = new THREE.Group(); beside(porch, STOPS[3].s + 16, 15); scene.add(porch);
-  box(9, 0.4, 7, "#8a5a2f", 0, 0.2, 0, porch);
-  box(5.4, 0.12, 3, "#2f6a7a", 0, 1.5, 0, porch); box(5.6, 0.04, 3.1, "#f6efe2", 0, 1.44, 0, porch);
-  for (const [x, z] of [[-2.4, -1.2], [2.4, -1.2], [-2.4, 1.2], [2.4, 1.2]]) box(0.1, 1.1, 0.1, "#1d1530", x, 0.95, z, porch);
-  box(0.05, 0.35, 3.1, "#ffffff", 0, 1.72, 0, porch, { transparent: true, opacity: 0.7 });
-  box(9, 4.5, 0.4, "#b8483a", 0, 2.5, -3.4, porch);
-  const hay = add(new THREE.CylinderGeometry(0.9, 0.9, 1.6, 10), mat("#e6c35c"), -3.4, 1.1, 2.3, porch); hay.rotation.z = Math.PI / 2;
-  for (let i = 0; i < 12; i++) add(geo("bulb", () => new THREE.IcosahedronGeometry(0.12, 0)), lampMat, -4.2 + i * 0.75, 4.4 - Math.sin(i / 11 * Math.PI) * 0.6, 3.2, porch, false);
+  // Frontier Crown: a small colonial outpost — palisade, watchtower with a flag, a field cannon
+  const fort = new THREE.Group(); beside(fort, STOPS[3].s + 16, 15); scene.add(fort);
+  for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 1.5 + Math.PI * 0.75; box(0.35, 2.2 + (i % 2) * 0.3, 0.35, "#7a5432", Math.cos(a) * 4.2, 1.1, Math.sin(a) * 4.2, fort); }
+  for (const [x, z] of [[-0.8, -0.8], [0.8, -0.8], [-0.8, 0.8], [0.8, 0.8]]) box(0.22, 4.2, 0.22, "#5a3d27", x - 1.2, 2.1, z - 1, fort);
+  box(2.2, 0.2, 2.2, "#8a5a2f", -1.2, 4.2, -1, fort); box(2.2, 0.6, 0.1, "#8a5a2f", -1.2, 4.6, 0.05, fort);
+  add(new THREE.ConeGeometry(1.7, 1.2, 4), mat("#c49a4f"), -1.2, 5.6, -1, fort).rotation.y = Math.PI / 4;
+  box(0.06, 2.2, 0.06, "#4a3020", -1.2, 7.2, -1, fort); box(1.0, 0.6, 0.04, "#3f6fd8", -0.68, 7.95, -1, fort);
+  add(new THREE.CylinderGeometry(0.42, 0.42, 0.1, 12), mat("#4a3020"), 1.7, 0.42, 1.2, fort).rotation.x = Math.PI / 2;
+  add(new THREE.CylinderGeometry(0.42, 0.42, 0.1, 12), mat("#4a3020"), 1.7, 0.42, 2.2, fort).rotation.x = Math.PI / 2;
+  const barrel = add(new THREE.CylinderGeometry(0.12, 0.17, 1.6, 10), mat("#b88a3e", { metalness: 0.4, roughness: 0.4 }), 2.3, 0.75, 1.7, fort); barrel.rotation.z = Math.PI / 2 + 0.15;
+  box(1.6, 1.1, 1.3, "#eadfc8", 1.8, 0.55, -2.2, fort); add(new THREE.ConeGeometry(1.2, 0.8, 4), mat("#9a4330"), 1.8, 1.5, -2.2, fort).rotation.y = Math.PI / 4;
+  for (let i = 0; i < 12; i++) add(geo("bulb", () => new THREE.IcosahedronGeometry(0.12, 0)), lampMat, -4.2 + i * 0.75, 3.4 - Math.sin(i / 11 * Math.PI) * 0.6, 3.6, fort, false);
 }
 // --- Rain Quarter: buildings, signs, lanterns
 const winTex = (() => {
