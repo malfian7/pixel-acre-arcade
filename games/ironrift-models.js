@@ -81,10 +81,15 @@ export function createFactory(THREE, renderer) {
   const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), P = V(), S = V();
   // merges [{g, m4}] into one non-indexed geometry (position + normal + uv)
   function merge(list) {
-    let n = 0; const parts = list.map(({ g, m }) => { const ng = g.index ? g.toNonIndexed() : g.clone(); ng.applyMatrix4(m); n += ng.attributes.position.count; return ng; });
+    let n = 0; const counts = []; const parts = list.map(({ g, m }) => { const ng = g.index ? g.toNonIndexed() : g.clone(); ng.applyMatrix4(m); counts.push(ng.attributes.position.count); n += ng.attributes.position.count; return ng; });
     const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2); let o = 0;
     for (const p of parts) { const c = p.attributes.position.count; pos.set(p.attributes.position.array, o * 3); nor.set(p.attributes.normal.array, o * 3); if (p.attributes.uv) uv.set(p.attributes.uv.array, o * 2); o += c; p.dispose(); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.BufferAttribute(nor, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    if (list.some((it) => it.bi != null)) {   // rigid skinning: every vertex follows exactly one bone
+      const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4); let v0 = 0;
+      list.forEach((it, k) => { for (let v = 0; v < counts[k]; v++) { si[(v0 + v) * 4] = it.bi; sw[(v0 + v) * 4] = 1; } v0 += counts[k]; });
+      g.setAttribute("skinIndex", new THREE.BufferAttribute(si, 4)); g.setAttribute("skinWeight", new THREE.BufferAttribute(sw, 4));
+    }
     g.computeBoundingSphere(); return g;
   }
   // collects parts per joint and per material, then merges each bucket into a single mesh on that joint
@@ -96,8 +101,23 @@ export function createFactory(THREE, renderer) {
       this.b.get(key).list.push({ g, m: new THREE.Matrix4().compose(P.set(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), S.set(sx, sy, sz)) });
       return this;
     }
-    build({ shadow = true, shadowOnlyMats = false } = {}) {
+    build({ shadow = true, shadowOnlyMats = false, skin = null } = {}) {
       const meshes = [];
+      if (skin) {   // one SkinnedMesh per material across the whole body (instead of one mesh per joint per material)
+        skin.root.updateMatrixWorld(true);
+        const inv = new THREE.Matrix4().copy(skin.root.matrixWorld).invert(), byMat = new Map();
+        for (const { joint, mat, list } of this.b.values()) {
+          const bi = Math.max(0, skin.bones.indexOf(joint)), jm = new THREE.Matrix4().multiplyMatrices(inv, joint.matrixWorld);
+          if (!byMat.has(mat)) byMat.set(mat, []);
+          for (const it of list) byMat.get(mat).push({ g: it.g, m: new THREE.Matrix4().multiplyMatrices(jm, it.m), bi });
+        }
+        const skel = new THREE.Skeleton(skin.bones);
+        for (const [mat, list] of byMat) {
+          const m = new THREE.SkinnedMesh(merge(list), shadowOnlyMats ? shadowOnly(mat) : mat);
+          m.castShadow = shadow; m.receiveShadow = !shadowOnlyMats; skin.root.add(m); m.bind(skel); meshes.push(m);
+        }
+        return { meshes, skel };
+      }
       for (const { joint, mat, list } of this.b.values()) {
         const m = new THREE.Mesh(merge(list), shadowOnlyMats ? shadowOnly(mat) : mat); m.castShadow = shadow; m.receiveShadow = !shadowOnlyMats; joint.add(m); meshes.push(m);
       }
@@ -119,12 +139,20 @@ export function createFactory(THREE, renderer) {
     blU: ["body", 0.17, -0.05, -0.3], blL: ["blU", 0, -0.26, 0], brU: ["body", -0.17, -0.05, -0.3], brL: ["brU", 0, -0.26, 0],
   };
   function makeRig(spec) {
-    const root = new THREE.Group(), j = {};
-    for (const [name, [par, x, y, z]] of Object.entries(spec)) { const o = new THREE.Group(); o.name = name; o.position.set(x, y, z); (par ? j[par] : root).add(o); j[name] = o; }
-    return { root, j };
+    const root = new THREE.Group(), j = {}, bones = [];
+    for (const [name, [par, x, y, z]] of Object.entries(spec)) { const o = new THREE.Bone(); o.name = name; o.position.set(x, y, z); (par ? j[par] : root).add(o); j[name] = o; bones.push(o); }
+    return { root, j, bones };
+  }
+  // An instance with its own skeleton (a plain clone would share the template's bones).
+  function cloneCharacter(t) {
+    const root = t.root.clone(true), byName = {};
+    root.traverse((o) => { if (o.isBone) byName[o.name] = o; });
+    const skel = new THREE.Skeleton(t.skel.bones.map((b) => byName[b.name]), t.skel.boneInverses);
+    root.traverse((o) => { if (o.isSkinnedMesh) o.bind(skel, o.bindMatrix); });
+    return { root, skel };
   }
 
-  /* ---------------------------------------------------------------- animation clips (shared by every instance) */
+  /* ---------------------------------------------------------------- animation clips: densely sampled, smooth cycles */
   function clip(name, dur, keys, pos = {}) {
     const tracks = [];
     for (const [bone, frames] of Object.entries(keys)) {
@@ -135,25 +163,74 @@ export function createFactory(THREE, renderer) {
     for (const [bone, frames] of Object.entries(pos)) tracks.push(new THREE.VectorKeyframeTrack(bone + ".position", frames.map((f) => f[0]), frames.flatMap((f) => f.slice(1))));
     return new THREE.AnimationClip(name, dur, tracks);
   }
-  const cyc = (T, a, b, ph = 0) => [0, 0.25, 0.5, 0.75, 1].map((u) => { const s = Math.sin((u + ph) * Math.PI * 2); return [u * T, a + b * s]; });
-  const legKeys = (T, sw, kn, lean) => {
-    const th = (ph) => cyc(T, 0, sw, ph).map(([t, v]) => [t, v, 0, 0]);
-    const sh = (ph) => [0, 0.25, 0.5, 0.75, 1].map((u) => [u * T, kn * (0.55 + 0.45 * Math.sin((u + ph + 0.25) * Math.PI * 2)), 0, 0]);
-    return { lThigh: th(0), rThigh: th(0.5), lShin: sh(0), rShin: sh(0.5), spine: [[0, lean, 0, 0], [T, lean, 0, 0]] };
+  const TAU = Math.PI * 2;
+  function sampled(name, T, n, fn) {
+    const keys = {}, pos = {};
+    for (let i = 0; i <= n; i++) {
+      const f = fn((i % n) / n), t = (i / n) * T;
+      for (const [b, v] of Object.entries(f)) { if (b.endsWith("@p")) (pos[b.slice(0, -2)] ||= []).push([t, ...v]); else (keys[b] ||= []).push([t, ...v]); }
+    }
+    return clip(name, T, keys, pos);
+  }
+  // rifle held at the shoulder: right hand on the grip (elbow bent 90°), left hand out on the handguard
+  const AIM = { rArm: [-0.45, 0, 0.3], rFore: [-1.15, 0, 0.1], lArm: [-1.0, 0, -0.55], lFore: [-0.6, 0, 0] };
+  const arms = (bob, sway = 0) => Object.fromEntries(Object.entries(AIM).map(([b, [x, y, z]]) => [b, [x + bob, y + sway, z]]));
+  const HIP0 = 0.98;
+  // forward gait: leg swing, knee lift on the swing phase, heel-toe roll, pelvis twist and counter-rotating torso
+  function gait(u, A, K, B, lean, tw) {
+    const s = Math.sin(TAU * u), c = Math.cos(TAU * u), c2 = Math.cos(2 * TAU * u);
+    const kl = 0.1 + K * Math.pow(Math.max(0, c), 1.3), kr = 0.1 + K * Math.pow(Math.max(0, -c), 1.3);
+    return {
+      ...arms(0.03 * c2 * (B / 0.04), -0.03 * s),
+      lThigh: [-A * s - 0.06, 0, 0.03], rThigh: [A * s - 0.06, 0, -0.03], lShin: [kl, 0, 0], rShin: [kr, 0, 0],
+      lFoot: [-0.35 * A * s - kl * 0.25, 0, 0], rFoot: [0.35 * A * s - kr * 0.25, 0, 0],
+      hips: [0, tw * s, 0.035 * s], spine: [lean, -tw * s * 0.7, -0.02 * s], chest: [0.02 * c2, -tw * s * 0.35, 0], neck: [0.04 - lean * 0.5, tw * s * 0.4, 0],
+      "hips@p": [0, HIP0 - B * 0.6 + B * c2, 0],
+    };
+  }
+  // side-step: the lead leg reaches out, the trail leg follows, the pelvis rocks
+  function side(u, dir) {
+    const s = Math.sin(TAU * u), c2 = Math.cos(2 * TAU * u), zs = -dir, L = dir > 0 ? "r" : "l", R2 = dir > 0 ? "l" : "r";
+    const lead = Math.max(0, s), trail = Math.max(0, -s);
+    return {
+      ...arms(0.02 * c2),
+      [L + "Thigh"]: [-0.08 - 0.15 * lead, 0, zs * (0.06 + 0.3 * lead)], [R2 + "Thigh"]: [-0.08 - 0.15 * trail, 0, -zs * 0.06 + zs * 0.22 * trail],
+      [L + "Shin"]: [0.15 + 0.55 * lead, 0, 0], [R2 + "Shin"]: [0.15 + 0.55 * trail, 0, 0],
+      [L + "Foot"]: [-0.1, 0, -zs * 0.15 * lead], [R2 + "Foot"]: [-0.1, 0, 0],
+      hips: [0, 0, zs * 0.05 * s], spine: [0.08, 0, -zs * 0.03 * s], chest: [0.02 * c2, 0, 0], neck: [0.04, 0, 0],
+      "hips@p": [0, HIP0 - 0.03 + 0.025 * c2, 0],
+    };
+  }
+  const idleF = (u) => {
+    const b = Math.sin(TAU * u), w = Math.sin(TAU * u + 0.6);
+    return { ...arms(0.015 * b), hips: [0, 0.02 * w, 0.025 * w], spine: [0.03, -0.015 * w, -0.02 * w], chest: [0.025 * b, 0.02 * Math.sin(TAU * 2 * u), 0], neck: [0.05, 0.14 * Math.sin(TAU * u + 1.3), 0],
+      lThigh: [-0.03, 0, 0.05 - 0.025 * w], rThigh: [-0.03, 0, -0.05 - 0.025 * w], lShin: [0.06 + 0.03 * Math.max(0, w), 0, 0], rShin: [0.06 + 0.03 * Math.max(0, -w), 0, 0],
+      lFoot: [-0.03, 0, -0.05], rFoot: [-0.03, 0, 0.05], "hips@p": [0.012 * w, HIP0 - 0.008 - 0.004 * b, 0] };
   };
-  // rifle held at the shoulder: right hand on the grip, left hand on the handguard
-  const AIM = { rArm: [-0.45, 0, 0.3], rFore: [-1.15, 0, 0.1], lArm: [-1.0, 0, -0.55], lFore: [-0.6, 0, 0], neck: [0.05, 0, 0] };
-  const pose = (T, bob = 0) => Object.fromEntries(Object.entries(AIM).map(([b, [x, y, z]]) => [b, [[0, x, y, z], [T / 2, x + bob, y, z], [T, x, y, z]]]));
+  const crouchF = (u) => { const b = Math.sin(TAU * u); return { ...arms(0.01 * b), lThigh: [-1.2, 0, 0.1], rThigh: [-0.5, 0, -0.1], lShin: [1.5, 0, 0], rShin: [1.9, 0, 0], lFoot: [-0.3, 0, 0], rFoot: [0.4, 0, 0], spine: [0.3, 0, 0], chest: [0.02 * b, 0, 0], hips: [0, 0, 0], neck: [-0.1, 0, 0], "hips@p": [0, 0.62 + 0.004 * b, 0] }; };
   const HCLIPS = {
-    idle: clip("idle", 2.4, { ...pose(2.4, 0.03), chest: [[0, 0, 0, 0], [1.2, 0.04, 0, 0], [2.4, 0, 0, 0]], lThigh: [[0, 0, 0, 0.04], [2.4, 0, 0, 0.04]], rThigh: [[0, 0, 0, -0.04], [2.4, 0, 0, -0.04]] }),
-    walk: clip("walk", 1.05, { ...pose(1.05, 0.04), ...legKeys(1.05, 0.45, 0.6, 0.06) }, { hips: cyc(1.05, 0.98, 0.02).map(([t, y]) => [t, 0, y, 0]) }),
-    run: clip("run", 0.66, { ...pose(0.66, 0.06), ...legKeys(0.66, 0.78, 1.15, 0.2) }, { hips: [0, 0.25, 0.5, 0.75, 1].map((u) => [u * 0.66, 0, 0.94 + 0.04 * Math.abs(Math.sin(u * Math.PI * 2)), 0]) }),
-    crouch: clip("crouch", 1.6, { ...pose(1.6, 0.02), lThigh: [[0, -1.2, 0, 0.1], [1.6, -1.2, 0, 0.1]], rThigh: [[0, -0.5, 0, -0.1], [1.6, -0.5, 0, -0.1]], lShin: [[0, 1.5, 0, 0], [1.6, 1.5, 0, 0]], rShin: [[0, 1.9, 0, 0], [1.6, 1.9, 0, 0]], spine: [[0, 0.3, 0, 0], [1.6, 0.3, 0, 0]] }, { hips: [[0, 0, 0.62, 0], [1.6, 0, 0.62, 0]] }),
+    idle: sampled("idle", 3.6, 24, idleF),
+    walk: sampled("walk", 1.1, 16, (u) => gait(u, 0.42, 0.75, 0.022, 0.05, 0.1)),
+    run: sampled("run", 0.7, 16, (u) => gait(u, 0.8, 1.3, 0.045, 0.2, 0.16)),
+    back: sampled("back", 1.1, 16, (u) => gait(u, 0.38, 0.6, 0.02, -0.02, 0.08)),
+    strafeR: sampled("strafeR", 0.9, 16, (u) => side(u, 1)),
+    strafeL: sampled("strafeL", 0.9, 16, (u) => side(u, -1)),
+    crouch: sampled("crouch", 2, 8, crouchF),
   };
+  // quadruped gaits: trot (diagonal pairs) and gallop (front pair, then back pair), with body pitch and a steady head
+  function dogGait(u, A, K, bob, pitch, ph) {
+    const out = { "body@p": [0, 0.62 + bob * Math.cos(2 * TAU * u), 0], body: [pitch * Math.sin(TAU * u), 0, 0], head: [-pitch * 0.8 * Math.sin(TAU * u) + 0.05, 0, 0], turret: [-pitch * 0.6 * Math.sin(TAU * u), 0, 0] };
+    for (const [k, p, front] of [["fl", ph[0], 1], ["fr", ph[1], 1], ["bl", ph[2], 0], ["br", ph[3], 0]]) {
+      const s = Math.sin(TAU * (u + p)), c = Math.cos(TAU * (u + p)), lift = K * Math.max(0, -c);
+      out[k + "U"] = [A * s, 0, 0]; out[k + "L"] = [front ? 0.25 + lift : -(0.25 + lift), 0, 0];
+    }
+    return out;
+  }
   const DCLIPS = {
-    idle: clip("idle", 1.8, { head: [[0, 0, -0.4, 0], [0.9, 0.05, 0.4, 0], [1.8, 0, -0.4, 0]], turret: [[0, 0, 0.3, 0], [0.9, 0, -0.3, 0], [1.8, 0, 0.3, 0]] }, { body: [[0, 0, 0.62, 0], [0.9, 0, 0.6, 0], [1.8, 0, 0.62, 0]] }),
-    run: clip("run", 0.4, (() => { const T = 0.4, u = (ph) => cyc(T, 0, 0.75, ph).map(([t, v]) => [t, v, 0, 0]), l = (ph) => cyc(T, 0.5, 0.5, ph + 0.2).map(([t, v]) => [t, -v, 0, 0]);
-      return { flU: u(0), frU: u(0.1), blU: u(0.5), brU: u(0.6), flL: l(0), frL: l(0.1), blL: l(0.5).map(([t, v]) => [t, -v, 0, 0]), brL: l(0.6).map(([t, v]) => [t, -v, 0, 0]), body: cyc(T, 0, 0.08, 0).map(([t, v]) => [t, v, 0, 0]) }; })(), { body: cyc(0.4, 0.6, 0.05).map(([t, y]) => [t, 0, y, 0]) }),
+    idle: sampled("idle", 2.4, 16, (u) => { const b = Math.sin(TAU * u); return { "body@p": [0, 0.62 - 0.01 * b, 0], body: [0.02 * b, 0, 0], head: [0.05 + 0.04 * Math.sin(TAU * u * 2), 0.45 * Math.sin(TAU * u), 0], turret: [0, -0.3 * Math.sin(TAU * u), 0],
+      flU: [0, 0, 0], frU: [0, 0, 0], blU: [0, 0, 0], brU: [0, 0, 0], flL: [0.25, 0, 0], frL: [0.25, 0, 0], blL: [-0.25, 0, 0], brL: [-0.25, 0, 0] }; }),
+    trot: sampled("trot", 0.56, 12, (u) => dogGait(u, 0.45, 0.6, 0.02, 0.04, [0, 0.5, 0.5, 0])),
+    run: sampled("run", 0.4, 12, (u) => dogGait(u, 0.8, 0.9, 0.05, 0.1, [0, 0.08, 0.5, 0.58])),
   };
 
   /* ---------------------------------------------------------------- shared body parts */
@@ -199,15 +276,17 @@ export function createFactory(THREE, renderer) {
   /* ---------------------------------------------------------------- characters */
   const HIT = (bone, x, y, z, r, part) => ({ bone, off: V(x, y, z), r, part });
   function humanoidBase(kind) {
-    const { root, j } = makeRig(HB), B = new Builder();
-    return { root, j, B, kind };
+    const { root, j, bones } = makeRig(HB), B = new Builder();
+    return { root, j, bones, B, kind };
   }
   function finish(c, mats = {}) {
-    const meshes = c.B.build(mats); delete c.B;
+    const { meshes, skel } = c.B.build({ ...mats, skin: { root: c.root, bones: c.bones } }); delete c.B;
+    c.skel = skel; c.meshes = meshes;
+    // a fixed, generous bounding sphere: no per-vertex skinning pass on the CPU for frustum culling
+    for (const m of meshes) m.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, c.dog ? 0.5 : 0.95, 0), c.dog ? 1.0 : 1.3);
     c.mixer = new THREE.AnimationMixer(c.root);
     const clips = c.dog ? DCLIPS : HCLIPS;
     c.actions = {}; for (const [k, cl] of Object.entries(clips)) { const a = c.mixer.clipAction(cl); a.play(); a.setEffectiveWeight(k === "idle" ? 1 : 0); c.actions[k] = a; }
-    c.meshes = meshes;
     return c;
   }
   // Wolf- or boar-masked mercenary
@@ -304,7 +383,7 @@ export function createFactory(THREE, renderer) {
   }
   // Robot dog with a back-mounted turret
   function makeDog() {
-    const { root, j } = makeRig(DB), B = new Builder(), c = { root, j, B, kind: "dog", dog: true, robot: true };
+    const { root, j, bones } = makeRig(DB), B = new Builder(), c = { root, j, bones, B, kind: "dog", dog: true, robot: true };
     B.add(j.body, rbox(0.34, 0.2, 0.74, 0.07), "shell", 0, 0, 0);
     B.add(j.body, rbox(0.3, 0.06, 0.6, 0.02), "joint", 0, -0.11, 0);
     B.add(j.body, rbox(0.12, 0.04, 0.3, 0.01), "hazard", 0, 0.105, -0.12);
@@ -421,5 +500,5 @@ export function createFactory(THREE, renderer) {
   }
 
   return { THREE, MAT, TEX, canvasTex, Builder, rbox, box, cyl, sph, cap, cone, merge,
-    makeMerc, makeSentinel, makeExo, makeDog, makeOperatorShadow, fpRifle, fpShotgun, fpLauncher, grenadeMesh, knifeMesh, fpArms, HCLIPS, DCLIPS };
+    makeMerc, makeSentinel, makeExo, makeDog, makeOperatorShadow, cloneCharacter, fpRifle, fpShotgun, fpLauncher, grenadeMesh, knifeMesh, fpArms, HCLIPS, DCLIPS };
 }

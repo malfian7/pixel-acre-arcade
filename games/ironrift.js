@@ -181,17 +181,20 @@ function makeParticles(N, additive) {
   let head = 0;
   return {
     mat,
-    emit(x, y, z, vx, vy, vz, life, s0, s1, a0, c, drag = 0, g = 0) { const p = P[head]; head = (head + 1) % N; Object.assign(p, { life, max: life, x, y, z, vx, vy, vz, s0, s1, a0, drag, g }); p.c.copy(c); },
+    emit(x, y, z, vx, vy, vz, life, s0, s1, a0, c, drag = 0, g = 0) { this.idle = false; const p = P[head]; head = (head + 1) % N; Object.assign(p, { life, max: life, x, y, z, vx, vy, vz, s0, s1, a0, drag, g }); p.c.copy(c); },
     update(dt) {
+      if (this.idle) return;
+      let live = 0;
       for (let i = 0; i < N; i++) {
         const p = P[i];
         if (p.life <= 0) { al[i] = 0; continue; }
         p.life -= dt; const k = Math.exp(-p.drag * dt); p.vx *= k; p.vy = p.vy * k - p.g * dt; p.vz *= k;
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; if (p.y < 0.02 && p.g > 0) { p.y = 0.02; p.vy *= -0.3; p.vx *= 0.6; p.vz *= 0.6; }
-        const u = 1 - p.life / p.max; pos[i * 3] = p.x; pos[i * 3 + 1] = p.y; pos[i * 3 + 2] = p.z;
+        live++; const u = 1 - p.life / p.max; pos[i * 3] = p.x; pos[i * 3 + 1] = p.y; pos[i * 3 + 2] = p.z;
         col[i * 3] = p.c.r; col[i * 3 + 1] = p.c.g; col[i * 3 + 2] = p.c.b; al[i] = p.a0 * (1 - u) * Math.min(1, p.life * 8); sz[i] = lerp(p.s0, p.s1, u);
       }
       for (const k of ["position", "color", "alpha", "size"]) geo.attributes[k].needsUpdate = true;
+      this.idle = live === 0;
     },
   };
 }
@@ -400,7 +403,7 @@ function pan3(p) {   // stereo pan + distance gain for a world position
 /* ================================================================ weapons */
 F.MAT.reddot.depthTest = true;
 const WEAPONS = [
-  { id: "rifle", name: "AR-7 CARBINE", size: 30, mag: 30, res: 210, maxRes: 330, interval: 0.085, dmg: 24, spreadHip: 0.03, spreadAds: 0.0018, recoil: 0.0105, recoilYaw: 0.004, reload: 1.7, adsFov: 50, shell: "brass", fp: F.fpRifle(), flash: flashMesh(0.26) },
+  { id: "rifle", name: "AR-7 CARBINE", size: 30, mag: 30, res: 210, maxRes: 330, interval: 0.085, dmg: 24, spreadHip: 0.022, spreadAds: 0.001, recoil: 0.0065, recoilYaw: 0.0025, reload: 1.7, adsFov: 50, shell: "brass", fp: F.fpRifle(), flash: flashMesh(0.26) },
   { id: "shotgun", name: "SG-12 BREACHER", size: 8, mag: 8, res: 40, maxRes: 72, interval: 0.26, pellets: 9, dmg: 13, spreadHip: 0.07, spreadAds: 0.048, recoil: 0.045, recoilYaw: 0.01, reloadShell: 0.4, adsFov: 64, shell: "shell", fp: F.fpShotgun(), flash: flashMesh(0.4) },
   { id: "launcher", name: "RL-4 BREACH LAUNCHER", size: 1, mag: 1, res: 6, maxRes: 12, interval: 0.55, dmg: 120, splash: 190, radius: 5.5, recoil: 0.06, recoilYaw: 0.01, reload: 1.9, adsFov: 58, fp: F.fpLauncher(), flash: flashMesh(0.6) },
 ];
@@ -439,7 +442,7 @@ function fire(dtNow) {
   const steady = AUG.steady();
   const spread = lerp(w.spreadHip, w.spreadAds, P.ads) * (P.ground ? 1 : 1.6) * (P.sprinting ? 2 : 1) * steady * (1 + Math.min(1, P.kick * 6) * 0.6);
   // camera kick, weapon kick
-  P.recoilP += w.recoil * (P.ads > 0.5 ? 0.75 : 1) * steady; P.recoilY += (Math.random() - 0.5) * w.recoilYaw * 2 * steady; P.kick = Math.min(0.12, P.kick + (w.id === "rifle" ? 0.022 : w.id === "shotgun" ? 0.07 : 0.09));
+  P.recoilP += w.recoil * (P.ads > 0.5 ? 0.6 : 1) * steady; P.recoilY += (Math.random() - 0.5) * w.recoilYaw * 2 * steady; P.kick = Math.min(0.12, P.kick + (w.id === "rifle" ? 0.022 : w.id === "shotgun" ? 0.07 : 0.09));
   addShake(w.id === "rifle" ? 0.02 : w.id === "shotgun" ? 0.12 : 0.2);
   w.flash.visible = true; w.flash.rotation.z = Math.random() * 6; w.flash.scale.setScalar(rnd(0.8, 1.2)); w.flashT = 0.045;
   flashLight.intensity = 30; vmFlash.intensity = 6;
@@ -724,13 +727,15 @@ const SPH = V3(), OC = V3();
 class Enemy {
   constructor(kind, pos, opts = {}) {
     const K = this.K = KINDS[kind], T = ensureKind(kind);
-    this.kind = kind; this.root = T.root.clone(true); this.root.position.copy(pos); scene.add(this.root);
+    this.kind = kind; this.root = F.cloneCharacter(T).root; this.root.position.copy(pos); scene.add(this.root);
     this.j = {}; this.root.traverse((o) => { if (o.name) this.j[o.name] = o; if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     this.muzzle = this.j.muzzle; this.core = this.j.core; this.pods = [this.j.pod0, this.j.pod1].filter(Boolean);
     this.scale = T.scale || 1; this.radius = K.radius; this.big = !!K.big; this.robot = !!K.robot;
-    this.hit = T.hit.map((h) => ({ bone: this.j[h.bone.name], off: h.off, r: h.r * this.scale, part: h.part }));
-    this.mixer = new THREE.AnimationMixer(this.root); this.actions = {};
-    for (const [k, a] of Object.entries(T.actions)) { const na = this.mixer.clipAction(a.getClip()); na.play(); na.setEffectiveWeight(k === "idle" ? 1 : 0); na.time = Math.random() * a.getClip().duration; this.actions[k] = na; }
+    this.hit = T.hit.map((h) => ({ bone: this.j[h.bone.name], off: h.off, r: h.r * this.scale * 1.12, part: h.part }));
+    this.meshes = []; this.root.traverse((o) => { if (o.isMesh) this.meshes.push(o); });
+    this.mixer = new THREE.AnimationMixer(this.root); this.actions = {}; this.w = {};
+    for (const [k, cl] of Object.entries(kind === "dog" ? F.DCLIPS : F.HCLIPS)) { const a = this.mixer.clipAction(cl); a.play(); a.setEffectiveWeight(k === "idle" ? 1 : 0); a.time = Math.random() * cl.duration; this.actions[k] = a; this.w[k] = k === "idle" ? 1 : 0; }
+    this.yawV = 0; this.strafeK = 0; this.kick = 0; this.shadowT = Math.random() * 0.5; this.farShadow = false;
     const hpK = G.mode === "onslaught" ? 1 + (G.wave - 1) * 0.06 : 1;
     this.hp = this.maxHp = (opts.hp || K.hp) * hpK; this.alive = true; this.yaw = Math.random() * 6.28; this.vel = V3(); this.speed = K.speed * rnd(0.92, 1.08);
     this.fireT = rnd(1.2, 2.4); this.burst = 0; this.burstT = 0; this.strafe = Math.random() < 0.5 ? -1 : 1; this.strafeT = rnd(1, 2.5); this.flinch = 0; this.stagger = 0;
@@ -787,12 +792,29 @@ function enemyCollide(e) {
     if (d2 >= r * r || d2 < 1e-8) continue; const d = Math.sqrt(d2), k = (r - d) / d; p.x += dx * k; p.z += dz * k;
   }
 }
+const NB = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]], AHEAD = V3();
+// Follow the distance field a few cells ahead and steer at that point: smooth curves instead of 45° grid zig-zags.
+function pathAhead(e, ff, steps) {
+  const N = world.nav, p = e.root.position, c = world.cellOf(p.x, p.z); if (c < 0) return null;
+  let i = (c / N.NZ) | 0, k = c % N.NZ, moved = 0;
+  for (let s = 0; s < steps; s++) {
+    let best = ff[i * N.NZ + k], bi = 0, bk = 0;
+    for (const [di, dk] of NB) {
+      const ni = i + di, nk = k + dk; if (ni < 0 || nk < 0 || ni >= N.NX || nk >= N.NZ) continue;
+      const n = ni * N.NZ + nk; if (N.block[n]) continue; if (di && dk && (N.block[(i + di) * N.NZ + k] || N.block[i * N.NZ + k + dk])) continue;
+      const v = ff[n] + (di && dk ? 0.41 : 0); if (v < best) { best = v; bi = di; bk = dk; }
+    }
+    if (!bi && !bk) break; i += bi; k += bk; moved++;
+  }
+  if (!moved) return null;
+  return AHEAD.set(N.NOX + i + 0.5, 0, N.NOZ + k + 0.5);
+}
 function updateEnemy(e, dt) {
   const p = e.root.position;
   if (!e.alive) { dyingUpdate(e, dt); return; }
-  e.flinch = damp(e.flinch, 0, 10, dt); e.stagger = Math.max(0, e.stagger - dt); e.invuln = Math.max(0, e.invuln - dt);
+  e.flinch = damp(e.flinch, 0, 10, dt); e.stagger = Math.max(0, e.stagger - dt); e.invuln = Math.max(0, e.invuln - dt); e.kick = damp(e.kick, 0, 12, dt);
   const tgt = chooseTarget(e);
-  let moveX = 0, moveZ = 0, face = null, los = false, dist = 99;
+  let mx = 0, mz = 0, face = null, los = false, dist = 99;
   if (tgt) {
     targetPoint(tgt, TP); e.center(EP);
     dist = Math.hypot(TP.x - p.x, TP.z - p.z);
@@ -802,50 +824,70 @@ function updateEnemy(e, dt) {
     if (e.kind === "boss") bossBrain(e, dt, tgt, dist, los);
     if (engage || (e.kind === "dog" && los && dist < 22)) {
       face = Math.atan2(TP.x - p.x, TP.z - p.z);
-      e.strafeT -= dt; if (e.strafeT <= 0) { e.strafeT = rnd(0.9, 2.4); e.strafe *= -1; }
+      // strafe in eased arcs, sometimes holding position to shoot
+      e.strafeT -= dt; if (e.strafeT <= 0) { e.strafeT = rnd(1.2, 2.8); e.strafe = Math.random() < 0.25 ? 0 : (e.strafe > 0 ? -1 : 1); }
+      e.strafeK = damp(e.strafeK, e.strafe, 1.8, dt);
       const want = e.kind === "dog" ? 6 : e.kind === "boar" ? 7 : e.big ? 12 : 14;
-      const fx = (TP.x - p.x) / dist, fz = (TP.z - p.z) / dist, closeK = clamp((dist - want) / 6, -1, 1);
+      const fx = (TP.x - p.x) / dist, fz = (TP.z - p.z) / dist, closeK = clamp((dist - want) / 5, -1, 1) * (e.big ? 1 : 0.85);
       const sK = e.big ? 0.25 : e.kind === "dog" ? 1 : 0.7;
-      moveX = fx * closeK + -fz * e.strafe * sK; moveZ = fz * closeK + fx * e.strafe * sK;
+      mx = fx * closeK - fz * e.strafeK * sK; mz = fz * closeK + fx * e.strafeK * sK;
     } else {
-      // walk downhill on the distance field towards the target
-      const c = world.cellOf(p.x, p.z);
-      if (c >= 0) {
-        const NZ = world.nav.NZ, i = (c / NZ) | 0, k = c % NZ; let best = ff[c], bx = 0, bz = 0;
-        for (const [di, dk] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-          const ni = i + di, nk = k + dk; if (ni < 0 || nk < 0 || ni >= world.nav.NX || nk >= NZ) continue;
-          const n = ni * NZ + nk; if (world.nav.block[n]) continue; if (di && dk && (world.nav.block[(i + di) * NZ + k] || world.nav.block[i * NZ + k + dk])) continue;
-          const v = ff[n] + (di && dk ? 0.4 : 0); if (v < best) { best = v; bx = di; bz = dk; }
-        }
-        if (bx || bz) { const L = Math.hypot(bx, bz); moveX = bx / L; moveZ = bz / L; }
-        else { moveX = (TP.x - p.x) / Math.max(1, dist); moveZ = (TP.z - p.z) / Math.max(1, dist); }
-      }
+      const a = pathAhead(e, ff, e.kind === "dog" ? 6 : 4);
+      if (a && dist > 2.5) { const dx = a.x - p.x, dz = a.z - p.z, L = Math.hypot(dx, dz) || 1; mx = dx / L; mz = dz / L; }
+      else { mx = (TP.x - p.x) / Math.max(1, dist); mz = (TP.z - p.z) / Math.max(1, dist); }
       if (los && dist < e.K.range * 1.2) face = Math.atan2(TP.x - p.x, TP.z - p.z);
     }
-    // weapon
     e.fireT -= dt;
     if (los && e.stagger <= 0 && dist < e.K.range * 1.15 && e.kind !== "boss") enemyWeapon(e, dt, tgt, dist);
-    else { e.spin = Math.max(0, e.spin - dt); }
+    else e.spin = Math.max(0, e.spin - dt);
   }
-  // separation
-  for (const o of ENEMIES) { if (o === e || !o.alive) continue; const dx = p.x - o.root.position.x, dz = p.z - o.root.position.z, d2 = dx * dx + dz * dz, rr = (e.radius + o.radius) * 1.3; if (d2 < rr * rr && d2 > 1e-6) { const d = Math.sqrt(d2); moveX += (dx / d) * (rr - d) * 1.5; moveZ += (dz / d) * (rr - d) * 1.5; } }
-  const mL = Math.hypot(moveX, moveZ); if (mL > 1) { moveX /= mL; moveZ /= mL; }
+  // soft separation from the squad
+  for (const o of ENEMIES) { if (o === e || !o.alive) continue; const dx = p.x - o.root.position.x, dz = p.z - o.root.position.z, d2 = dx * dx + dz * dz, rr = (e.radius + o.radius) * 1.3; if (d2 < rr * rr && d2 > 1e-6) { const d = Math.sqrt(d2); mx += (dx / d) * (rr - d) * 1.2; mz += (dz / d) * (rr - d) * 1.2; } }
+  const mL = Math.hypot(mx, mz); if (mL > 1) { mx /= mL; mz /= mL; }
+  // steering: accelerate toward the wanted velocity with a cap, so starts, stops and turns ease in and out
   const spd = e.speed * (e.stagger > 0 ? 0.2 : 1) * (e.kind === "exo" && e.spin > 0 ? 0.45 : 1) * (e.dash > 0 ? 4.5 : 1);
-  e.vel.x = damp(e.vel.x, moveX * spd, 6, dt); e.vel.z = damp(e.vel.z, moveZ * spd, 6, dt);
+  const dvx = mx * spd - e.vel.x, dvz = mz * spd - e.vel.z, dL = Math.hypot(dvx, dvz), maxA = (e.kind === "dog" ? 30 : e.big ? (e.dash > 0 ? 40 : 8) : 18) * dt;
+  const ak = dL > maxA ? maxA / dL : 1; e.vel.x += dvx * ak; e.vel.z += dvz * ak;
   p.x += e.vel.x * dt; p.z += e.vel.z * dt; enemyCollide(e);
   p.x = clamp(p.x, world.ARENA.x0 + 1, world.ARENA.x1 - 1); p.z = clamp(p.z, world.ARENA.z0 + 1, world.ARENA.z1 - 1);
-  // facing and animation blend
+  // facing: angular velocity is smoothed and capped
   const hs = Math.hypot(e.vel.x, e.vel.z);
-  const yawT = face ?? (hs > 0.4 ? Math.atan2(e.vel.x, e.vel.z) : e.yaw);
-  e.yaw += wrapA(yawT - e.yaw) * (1 - Math.exp(-(e.kind === "dog" ? 10 : 7) * dt)); e.root.rotation.y = e.yaw;
-  const A = e.actions, run = clamp((hs - 1.6) / 3, 0, 1), walk = clamp(hs / 1.6, 0, 1) * (1 - run);
-  if (e.kind === "dog") { A.run.setEffectiveWeight(clamp(hs / 4, 0, 1)); A.idle.setEffectiveWeight(1 - clamp(hs / 4, 0, 1)); A.run.timeScale = clamp(hs / 8, 0.6, 1.5); }
-  else { A.idle.setEffectiveWeight(1 - run - walk); A.walk.setEffectiveWeight(walk); A.run.setEffectiveWeight(run); A.crouch.setEffectiveWeight(0); A.run.timeScale = e.big ? 0.75 : 1; A.walk.timeScale = e.big ? 0.8 : 1; }
-  e.mixer.update(dt);
-  // upper body aims at the target; flinch on hits
-  if (tgt && e.kind !== "dog") { const pitch = Math.atan2(TP.y - (p.y + 1.3 * e.scale), Math.max(1, dist)); e.aimPitch = damp(e.aimPitch, -pitch, 8, dt); e.j.chest.rotation.x += e.aimPitch * 0.8 - e.flinch; e.j.spine.rotation.z += e.flinch * 0.4; }
-  if (e.kind === "dog" && e.j.turret && tgt) { e.j.turret.rotation.y += wrapA(Math.atan2(TP.x - p.x, TP.z - p.z) - e.yaw); }
+  const yawT = face ?? (hs > 0.5 ? Math.atan2(e.vel.x, e.vel.z) : e.yaw), maxW = e.kind === "dog" ? 9 : e.big ? 2.4 : 5.5;
+  e.yawV = damp(e.yawV, clamp(wrapA(yawT - e.yaw) * 7, -maxW, maxW), 10, dt); e.yaw = wrapA(e.yaw + e.yawV * dt); e.root.rotation.y = e.yaw;
+  animateEnemy(e, dt, hs, tgt, dist);
+  // far enemies skip the shadow pass
+  e.shadowT -= dt; if (e.shadowT <= 0) { e.shadowT = 0.5; const far = p.distanceTo(camera.position) > 50; if (far !== e.farShadow) { e.farShadow = far; for (const m of e.meshes) m.castShadow = !far; } }
   e.root.updateMatrixWorld(true);
+}
+// Clips blend by the direction the body is moving relative to where it faces, with weights that ease over time;
+// aim pitch, head tracking, recoil and hit flinch are layered on top of the clips.
+function animateEnemy(e, dt, hs, tgt, dist) {
+  const A = e.actions, W = e.w, set = (k, v) => { W[k] = damp(W[k], v, 7, dt); A[k].setEffectiveWeight(W[k]); };
+  const p = e.root.position;
+  if (e.kind === "dog") {
+    const mk = clamp(hs / 1.2, 0, 1), runK = clamp((hs - 4) / 3, 0, 1);
+    set("idle", 1 - mk); set("trot", mk * (1 - runK)); set("run", mk * runK);
+    A.trot.timeScale = clamp(hs / 3.2, 0.6, 1.6); A.run.timeScale = clamp(hs / 8.5, 0.7, 1.5);
+    e.mixer.update(dt);
+    e.j.body.rotation.z -= e.yawV * 0.035;
+    if (tgt) e.j.turret.rotation.y += wrapA(Math.atan2(TP.x - p.x, TP.z - p.z) - e.yaw);
+    return;
+  }
+  const fx = Math.sin(e.yaw), fz = Math.cos(e.yaw), vf = e.vel.x * fx + e.vel.z * fz, vs = -e.vel.x * fz + e.vel.z * fx;
+  const mk = clamp(hs / 1.1, 0, 1), sum = Math.abs(vf) + Math.abs(vs) + 1e-4, runK = clamp((hs - 2.3) / 2.2, 0, 1) * (e.big ? 0.35 : 1);
+  const wf = Math.max(0, vf) / sum, wb = Math.max(0, -vf) / sum, wr = Math.max(0, vs) / sum, wl = Math.max(0, -vs) / sum;
+  set("idle", 1 - mk); set("walk", mk * wf * (1 - runK)); set("run", mk * wf * runK); set("back", mk * wb); set("strafeR", mk * wr); set("strafeL", mk * wl); set("crouch", 0);
+  const slow = e.big ? 0.82 : 1;
+  A.walk.timeScale = clamp(hs / 1.6, 0.6, 1.5) * slow; A.run.timeScale = clamp(hs / 4.6, 0.7, 1.35) * slow; A.back.timeScale = -clamp(hs / 1.5, 0.6, 1.4) * slow;
+  A.strafeR.timeScale = A.strafeL.timeScale = clamp(hs / 2.1, 0.6, 1.5) * slow;
+  e.mixer.update(dt);
+  if (tgt) {
+    const pitch = Math.atan2(TP.y - (p.y + 1.3 * e.scale), Math.max(1, dist));
+    e.aimPitch = damp(e.aimPitch, -pitch, 8, dt);
+    const look = clamp(wrapA(Math.atan2(TP.x - p.x, TP.z - p.z) - e.yaw), -0.7, 0.7);
+    e.j.neck.rotation.y += look * 0.6; e.j.chest.rotation.y += look * 0.3;
+  }
+  e.j.chest.rotation.x += e.aimPitch * 0.8 - e.flinch - e.kick; e.j.spine.rotation.z += e.flinch * 0.4; e.j.rArm.rotation.x -= e.kick * 1.4;
 }
 // ---- enemy weapons: every shot is telegraphed (flash, tracer, sound) and accuracy falls off with range and target speed
 function hitChance(e, tgt, dist) {
@@ -861,7 +903,7 @@ function shootAt(e, tgt, dmg, color, sound, tw = 0.03) {
   const d = V3().subVectors(end, m).normalize(); world.raycast(m, d, m.distanceTo(end) + (hit ? 0 : 40), RHE);
   const blocked = RHE.t < m.distanceTo(TP) - 0.6;
   const stop = m.clone().addScaledVector(d, Math.min(RHE.t, m.distanceTo(end) + (hit ? 0 : 30)));
-  tracer(m, stop, color, tw, 260); enemyFlash(m, e.big ? 1.1 : 0.6);
+  tracer(m, stop, color, tw, 260); enemyFlash(m, e.big ? 1.1 : 0.6); e.kick = Math.min(0.12, e.kick + (e.big ? 0.025 : 0.06));
   sfx(sound, pan3(m));
   if (hit && !blocked) { if (tgt === P) hurtPlayer(dmg * e.dmgK, m, "bullet"); else damageFoe(tgt, dmg * 1.6, { part: "body", owner: "ffa", src: e, dir: d, point: TP.clone() }); }
   else if (RHE.n) decal(HOLES, stop, RHE.n, 0.1);
@@ -874,7 +916,7 @@ function enemyWeapon(e, dt, tgt, dist) {
   } else if (w === "scatter") {
     if (e.fireT <= 0 && dist < 16) { e.fireT = rnd(1.4, 1.9); for (let k = 0; k < 5; k++) shootAt(e, tgt, dist < 7 ? 6 : 4, 0xffb060, k ? "impact" : "shotgun", 0.018); }
   } else if (w === "plasma") {
-    if (e.burst > 0) { e.burstT -= dt; if (e.burstT <= 0) { e.burst--; e.burstT = 0.22; const m = e.muzzle.getWorldPosition(V3()); targetPoint(tgt, TP); const lead = targetVel(tgt).clone().multiplyScalar(dist / 32 * 0.6); const d = V3().subVectors(TP.add(lead), m).normalize(); d.x += rnd(-0.03, 0.03); d.y += rnd(-0.02, 0.02); spawnBolt(m, d.normalize(), e.ffa ? "ffa" : "enemy", 13 * e.dmgK, 32, 0x7fe6ff, e); enemyFlash(m, 0.5, 0x7fe6ff); sfx("laser", pan3(m)); } }
+    if (e.burst > 0) { e.burstT -= dt; if (e.burstT <= 0) { e.burst--; e.burstT = 0.22; const m = e.muzzle.getWorldPosition(V3()); targetPoint(tgt, TP); const lead = targetVel(tgt).clone().multiplyScalar(dist / 32 * 0.6); const d = V3().subVectors(TP.add(lead), m).normalize(); d.x += rnd(-0.03, 0.03); d.y += rnd(-0.02, 0.02); spawnBolt(m, d.normalize(), e.ffa ? "ffa" : "enemy", 13 * e.dmgK, 32, 0x7fe6ff, e); e.kick = 0.08; enemyFlash(m, 0.5, 0x7fe6ff); sfx("laser", pan3(m)); } }
     else if (e.fireT <= 0) { e.burst = 2; e.burstT = 0.35; e.fireT = rnd(1.4, 2.0); sfx("servo", pan3(e.root.position)); }
   } else if (w === "dog") {
     e.lungeCD -= dt;
@@ -987,7 +1029,7 @@ function killFoe(e, info) {
   for (const [l, v] of ev) pts += v;
   addStyle(pts, ev.length ? ev.map((x) => x[0]).join(" · ") : "KILL");
   const sc = Math.round(e.K.score * RANK_MULT[rankOf()]); G.score += sc; HUD.killPop(sc, ev.length > 0);
-  sfx("kill"); G.hitStop = Math.max(G.hitStop, info.part === "head" ? 0.07 : 0.045); HUD.killBurst();
+  sfx("kill"); G.hitStop = Math.max(G.hitStop, info.part === "head" ? 0.06 : 0.035); HUD.killBurst();
   if ((info.part === "head" || info.part === "weak" || info.part === "core") && AUG.vamp()) P.health = Math.min(P.maxHealth, P.health + AUG.vamp());
   dropLoot(e, 1);
   if (G.mode === "deathmatch") G.score = P.kills;
@@ -1170,10 +1212,11 @@ function updateHUD(dt) {
   HE2.odEdge.classList.toggle("on", G.overdrive > 0);
   if (G.boss) { HE2.bossFill.style.transform = `scaleX(${Math.max(0, G.boss.hp / G.boss.maxHp).toFixed(3)})`; setTxt(HE2.bossPh, `PHASE ${G.boss.phase}`); if (!G.boss.alive) HUD.bossBar(null); }
   // low health: a pulsing blood-red edge, never blur or double vision
-  HE2.vig.style.setProperty("--low", clamp(1 - P.health / 45, 0, 1).toFixed(2));
+  const low = clamp(1 - P.health / 45, 0, 1).toFixed(2); if (HE2.vig._l !== low) { HE2.vig._l = low; HE2.vig.style.setProperty("--low", low); }
   // crosshair: hip only (sights are real when aiming), spread follows recoil and movement
   const spread = (lerp(w.spreadHip || 0.03, w.spreadAds || 0.003, P.ads) * (P.ground ? 1 : 1.6) + P.kick * 0.25) * innerHeight * 1.1;
-  HE2.xh.style.setProperty("--g", (8 + spread).toFixed(1) + "px"); HE2.xh.style.opacity = (1 - P.ads * 1.4).toFixed(2); HE2.xh.classList.toggle("sg", w.id === "shotgun");
+  const gap = (8 + spread).toFixed(0) + "px", op = Math.max(0, 1 - P.ads * 1.4).toFixed(2);
+  if (HE2.xh._g !== gap) { HE2.xh._g = gap; HE2.xh.style.setProperty("--g", gap); } if (HE2.xh._o !== op) { HE2.xh._o = op; HE2.xh.style.opacity = op; } HE2.xh.classList.toggle("sg", w.id === "shotgun");
   HE2.board.classList.toggle("on", G.mode === "deathmatch" && IN.score);
   if (HE2.board.classList.contains("on")) HE2.board.innerHTML = `<h3>SCOREBOARD</h3>` + [{ name: "YOU", kills: P.kills || 0, deaths: P.deaths || 0, me: true }, ...ENEMIES].sort((a, b) => b.kills - a.kills).map((e) => `<div class="${e.me ? "me" : ""}"><span>${e.name}</span><b>${e.kills}</b><i>${e.deaths}</i></div>`).join("");
   drawHudCanvas(dt);
@@ -1254,7 +1297,7 @@ function activate(el, d) {
 function applySettings() {
   applyVolumes();
   const hi = settings.quality === 1;
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, hi ? 1.75 : 1));
+  DR.pr = maxPR(); renderer.setPixelRatio(DR.pr);
   world.sun.shadow.mapSize.set(hi ? 2048 : 1024, hi ? 2048 : 1024); if (world.sun.shadow.map) { world.sun.shadow.map.dispose(); world.sun.shadow.map = null; }
   resize();
 }
@@ -1385,9 +1428,12 @@ function endRun(win) {
 /* ================================================================ camera */
 const CAMQ = new THREE.Euler(0, 0, 0, "YXZ");
 function updateCamera(dt, t) {
+  // the title shot shifts the frame sideways; gameplay must not, or the crosshair and bullets disagree
+  if (camera.view && camera.view.enabled) camera.clearViewOffset();
   // half of the recoil climbs for good (pull down to control it), half springs back
-  const tr = P.recoilP * (1 - Math.exp(-9 * dt)); P.pitch = clamp(P.pitch + tr * 0.5, -1.5, 1.5); P.recoilP -= tr;
-  const ty = P.recoilY * (1 - Math.exp(-9 * dt)); P.yaw -= ty * 0.5; P.recoilY -= ty;
+  // a quarter of the recoil climbs for good (pull down a little to hold it), the rest springs back
+  const tr = P.recoilP * (1 - Math.exp(-11 * dt)); P.pitch = clamp(P.pitch + tr * 0.25, -1.5, 1.5); P.recoilP -= tr;
+  const ty = P.recoilY * (1 - Math.exp(-11 * dt)); P.yaw -= ty * 0.25; P.recoilY -= ty;
   const eye = P.alive ? lerp(1.62, P.slideT > 0 ? 0.82 : 1.02, P.crouch) : damp(camera.position.y - P.pos.y, 0.35, 3, dt);
   P.landDip = damp(P.landDip, 0, 8, dt);
   const hs = Math.hypot(P.vel.x, P.vel.z), bobK = P.ground && P.slideT <= 0 ? clamp(hs / 6, 0, 1) * (1 - P.ads * 0.8) : 0;
@@ -1405,7 +1451,7 @@ function updateCamera(dt, t) {
 }
 // Title: an over-the-shoulder shot of the operator watching the quay
 const titleOp = (() => {
-  const c = { root: opShadow.root.clone(true) }; c.root.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); o.material.colorWrite = true; o.material.depthWrite = true; o.castShadow = true; o.receiveShadow = true; } });
+  const c = { root: F.cloneCharacter(opShadow).root }; c.root.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); o.material.colorWrite = true; o.material.depthWrite = true; o.castShadow = true; o.receiveShadow = true; } });
   c.mixer = new THREE.AnimationMixer(c.root); c.mixer.clipAction(F.HCLIPS.idle).play(); c.root.position.set(-5.35, 0, -49.9); c.root.rotation.y = Math.PI + 0.75; scene.add(c.root); return c;
 })();
 const titleMercs = [];
@@ -1450,8 +1496,19 @@ function autopilot() {   // test hook: aims at the nearest visible enemy and fir
   else { const e = ENEMIES.find((e) => e.alive); if (e) { const c = e.root.position; P.yaw = Math.atan2(-(c.x - P.pos.x), -(c.z - P.pos.z)); IN.move.z = -1; } }
   if (curW().mag === 0 && curW().res === 0) selectWeapon((W8.cur + 1) % 3);
 }
+const DR = { pr: 1, acc: 0, n: 0, t: 0, cool: 0 };
+function maxPR() { return settings.quality === 1 ? Math.min(devicePixelRatio || 1, 1.5) : Math.min(devicePixelRatio || 1, 1); }
+function dynRes(dt) {
+  if (SIM || THUMB || G.state !== "play") return;
+  DR.acc += dt; DR.n++; DR.t += dt; DR.cool -= dt; if (DR.t < 1.2) return;
+  const avg = DR.acc / DR.n; DR.acc = DR.n = DR.t = 0; if (DR.cool > 0) return;
+  let pr = DR.pr; const lo = settings.quality === 1 ? 0.6 : 0.5;
+  if (avg > 1 / 50) pr = Math.max(lo, pr - (avg > 1 / 35 ? 0.2 : 0.1)); else if (avg < 1 / 58) pr = Math.min(maxPR(), pr + 0.05);
+  if (Math.abs(pr - DR.pr) > 0.01) { DR.pr = pr; DR.cool = 1.5; renderer.setPixelRatio(pr); resize(); }
+}
 function frame(dt, t) {
   readInput(dt);
+  dynRes(dt);
   IN.swayX = IN.lookX * 25; IN.swayY = IN.lookY * 25;
   if (IN.pauseP) { IN.pauseP = false; if (G.state === "play") pauseGame(); else if (G.state === "paused" && MENU && MENU.back === resumeGame) resumeGame(); }
   const reps = SIM || 1, t0 = performance.now();
@@ -1463,8 +1520,8 @@ function frame(dt, t) {
 }
 function step(rdt, t, first) {
   if (G.state === "play") {
-    const sdt = G.hitStop > 0 ? rdt * 0.08 : rdt; G.hitStop = Math.max(0, G.hitStop - rdt);
-    G.time += sdt;
+    const sdt = G.hitStop > 0 ? rdt * 0.25 : rdt; G.hitStop = Math.max(0, G.hitStop - rdt);
+    G.time += rdt;
     if (AUTO) { autopilot(); P.health = Math.max(P.health, 60); }
     if (P.alive) {
       if (IN.slotP >= 0) selectWeapon(IN.slotP);
@@ -1474,16 +1531,16 @@ function step(rdt, t, first) {
       if (IN.fire) fire(); else W8.fireHeld = false;
     }
     if (!first) { IN.slotP = -1; IN.swapP = IN.reloadP = IN.grenadeP = IN.meleeP = IN.overP = IN.jumpP = IN.crouchP = false; }
-    prof("player", () => updatePlayer(sdt));
+    prof("player", () => updatePlayer(rdt));
     flowT -= sdt; if (flowT <= 0 && G.mode === "onslaught") { flowT = 0.35; prof("flow", () => world.flow(P.pos.x, P.pos.z, flowField)); }
     prof("enemies", () => { for (const e of ENEMIES) updateEnemy(e, sdt); });
     for (let i = ENEMIES.length - 1; i >= 0; i--) { const e = ENEMIES[i]; if (!e.alive && e.deadT > 5.5 && G.mode === "onslaught") { e.remove(); ENEMIES.splice(i, 1); } }
-    updateProjectiles(sdt); updatePickups(sdt);
-    if (G.mode === "onslaught") updateWaves(sdt); else updateDeathmatch(sdt);
+    updateProjectiles(sdt); updatePickups(rdt);
+    if (G.mode === "onslaught") updateWaves(rdt); else updateDeathmatch(rdt);
     // style decays when you stop performing; Overdrive ticks down
     G.styleIdle += sdt; if (G.styleIdle > 2) G.style = Math.max(0, G.style - sdt * (16 + rankOf() * 7));
     if (G.overdrive > 0) { G.overdrive -= sdt; G.odMeter = Math.max(0, (G.overdrive / AUG.odDur()) * 100); if (G.overdrive <= 0) { G.overdrive = 0; G.odMeter = 0; sfx("overdriveOff"); } }
-    prof("vm", () => updateViewmodel(sdt, t)); updateCamera(rdt, t);
+    prof("vm", () => updateViewmodel(rdt, t)); updateCamera(rdt, t);
     if (++aimCheck % 3 === 0) { camera.getWorldDirection(RAY_D); G.aimOnTarget = ENEMIES.some((e) => e.alive && e.rayHit(camera.position, RAY_D, 80)); }
     prof("fx", () => fxUpdate(sdt, t));
     if (first) prof("hud", () => updateHUD(rdt));
@@ -1491,12 +1548,13 @@ function step(rdt, t, first) {
   else if (G.state === "over") { updateCamera(rdt, t); fxUpdate(rdt * 0.3, t); }
   prof("world", () => world.update(G.state === "paused" || G.state === "augment" ? 0 : rdt, t, camera));
 }
+const FXM = new THREE.Matrix4(), FXQ = new THREE.Quaternion(), FXE = new THREE.Euler(), FXS = V3(), DBS = new THREE.Vector2();
 function fxUpdate(dt, t) {
   SOFT.update(dt); GLOW.update(dt);
   for (const s of eFlashes) if (s.visible) { s.t -= dt; if (s.t <= 0) s.visible = false; }
   for (const m of tracers) if (m.visible) { m.d += m.speed * dt; if (m.d > m.len) { m.visible = false; continue; } m.position.copy(m.from).addScaledVector(m.dir, m.d); m.scale.z = Math.min(m.len - m.d, 6) + 0.01; m.material.opacity = 0.9; }
   for (const s of shells) if (s.m.visible) { s.t -= dt; s.v.y -= 14 * dt; s.m.position.addScaledVector(s.v, dt); s.m.rotation.x += s.w.x * dt; s.m.rotation.y += s.w.y * dt; if (s.m.position.y < 0.01) { s.m.position.y = 0.01; if (s.b++ < 2) { s.v.y *= -0.35; s.v.x *= 0.5; s.v.z *= 0.5; s.w.multiplyScalar(0.5); if (s.b === 1) sfx("shell", { pan: 0.4 }); } else s.v.set(0, 0, 0); } if (s.t <= 0) s.m.visible = false; }
-  let anyD = false; const M = new THREE.Matrix4(), Qd = new THREE.Quaternion(), Ed = new THREE.Euler(), Sd = V3();
+  let anyD = false; const M = FXM, Qd = FXQ, Ed = FXE, Sd = FXS;
   for (let i = 0; i < debris.length; i++) { const d = debris[i]; if (d.t <= 0) continue; anyD = true; d.t -= dt; d.v.y -= 18 * dt; d.p.addScaledVector(d.v, dt); d.r.addScaledVector(d.w, dt); if (d.p.y < d.s / 2) { d.p.y = d.s / 2; d.v.y *= -0.3; d.v.x *= 0.6; d.v.z *= 0.6; d.w.multiplyScalar(0.6); } M.compose(d.p, Qd.setFromEuler(Ed.set(d.r.x, d.r.y, d.r.z)), Sd.setScalar(d.t > 0 ? d.s : 0)); debrisM.setMatrixAt(i, M); }
   if (anyD) debrisM.instanceMatrix.needsUpdate = true;
   for (const r of rings) if (r.m.visible) { r.t -= dt; const u = 1 - r.t / r.max; r.m.scale.setScalar(0.3 + u * r.r); r.m.material.opacity = (1 - u) * 0.8; if (r.t <= 0) r.m.visible = false; }
@@ -1504,7 +1562,7 @@ function fxUpdate(dt, t) {
   boomLight.intensity = damp(boomLight.intensity, 0, 7, dt);
 }
 function render() {
-  const h = renderer.getDrawingBufferSize(new THREE.Vector2()).y;
+  const h = renderer.getDrawingBufferSize(DBS).y;
   SOFT.mat.uniforms.uScale.value = GLOW.mat.uniforms.uScale.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   renderer.clear(); renderer.render(scene, camera);
   if (G.state === "play" || G.state === "paused" || G.state === "augment") {
