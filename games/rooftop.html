@@ -61,7 +61,8 @@ let envTex;
   glow(0xff8a3d, -6, 1, -8, 4, 2); glow(0xf27c8c, 7, 2, -6, 3, 3); glow(0xffd27a, 0, 3, -10, 6, 1.2);
   glow(0x8fb8ff, -8, 6, 4, 5, 2); glow(0xf4a63a, 6, 0.5, 6, 4, 1.5); glow(0x4a3a72, 0, 10, 0, 20, 20);
   const band = new THREE.Mesh(new THREE.CylinderGeometry(12, 12, 2.5, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x8a4a6a, side: THREE.BackSide })); env.add(band);
-  envTex = pm.fromScene(env, 0.035).texture; pm.dispose();
+  const envRT = pm.fromScene(env, 0.035); envTex = envRT.texture; pm.dispose();
+  PA.cleaner.disposeObject(env); PA.cleaner.track(envRT); // bake scene done; the target lives until the page closes
 }
 
 // Backdrop: night-sky gradient, warm town glow and two layers of distant skyline, painted

@@ -16,6 +16,7 @@ import { createFx } from "./fx.js";
 import { RTSCameraController } from "./camera.js";
 import { buildWater, buildSky } from "./terrain.js";
 import { CanvasFog } from "./fog-canvas.js";
+import { cleanerFor } from "../../scene-cleaner.js";
 import { UnitActors } from "./unit-actors.js";
 import { STATE } from "./unit-animator.js";
 import { buildTerrainGeometry, buildTintTexture, buildMinimapImage } from "../terrain/terrain-mesh.js";
@@ -36,7 +37,7 @@ const GAIT = { villager: 5.2, musketeer: 5.0, pikeman: 5.0, grenadier: 5.0, skir
 const LOD_DIST = 46;
 
 export class View {
-  constructor(renderer, sim, { me = 0, quality = "high", assets = null, actorBudget } = {}) {
+  constructor(renderer, sim, { me = 0, quality = "high", assets = null, actorBudget, input = null } = {}) {
     this.r = renderer; this.sim = sim; this.me = me; this.quality = quality;
     const scene = this.scene = new THREE.Scene();
     scene.background = new THREE.Color(0xcfe0ea);
@@ -44,7 +45,7 @@ export class View {
     this.camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.5, 600);
     // classic RTS camera: inertial pan (keys / middle-drag / edge), pitch-on-zoom, map bounds
     this.cam = new RTSCameraController(THREE, this.camera, (x, z) => sim.grid.heightAt(x, z), W);
-    this.cam.attach(renderer.domElement);
+    if (input) this.cam.bindInput(input, renderer.domElement);
     const tc = sim.players[me].tc;
     if (tc >= 0) this.cam.focus(sim.st.x[tc] + 4, sim.st.z[tc] + 2);
 
@@ -57,9 +58,11 @@ export class View {
     sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.04;
     scene.add(sun); scene.add(sun.target);
     // environment for water reflections
+    this.cleaner = cleanerFor(renderer);
     const pm = new THREE.PMREMGenerator(renderer);
     const envScene = new THREE.Scene(); envScene.add(buildSky(THREE));
-    this.env = pm.fromScene(envScene, 0.04).texture; pm.dispose();
+    this.envRT = pm.fromScene(envScene, 0.04); this.env = this.envRT.texture; pm.dispose();
+    this.cleaner.disposeObject(envScene); // the capture scene's sky was uploaded once, only for the PMREM bake
     scene.environment = this.env; scene.environmentIntensity = 0.35;
     scene.add(buildSky(THREE));
 
@@ -77,7 +80,7 @@ export class View {
     this.actors = new UnitActors(scene, assets || { has: () => false }, { patch: (m) => inst.patch(m), teamRGB: TEAM_COLORS.map((c) => { const k = new THREE.Color(c); return [k.r, k.g, k.b]; }), quality, budget: actorBudget });
 
     // terrain: heightmap PlaneGeometry + splat shader + build grid + exact picker
-    if (!groundTex) groundTex = createGroundTextures(THREE);
+    if (!groundTex) { groundTex = createGroundTextures(THREE); this.cleaner.track(groundTex.grass, groundTex.dirt, groundTex.sand, groundTex.rock); } // page-lifetime cache
     this.buildGrid = new BuildGrid(THREE, sim.grid, me);
     this.tint = buildTintTexture(THREE, sim.grid, sim.seed);
     const tm = createTerrainMaterial(THREE, { textures: groundTex, tint: this.tint, fogTex: this.fog.tex, buildTex: this.buildGrid.tex, mapSize: W, triplanar: quality !== "low" });
@@ -668,11 +671,16 @@ export class View {
     return pz < 1 && px >= 0 && px <= w && py >= 0 && py <= h;
   }
 
+  /** Free every GPU resource this world uploaded (SceneCleaner: geometry, materials, every texture
+   *  slot and shader uniform, shadow maps, render targets). Page-wide caches are kept: the ground
+   *  textures (shared by every match) and the glTF unit templates (render/assets.js). */
   dispose() {
     this.cam.detach();
-    this.actors.dispose(); // shared model geometry belongs to the AssetManager: detach before the traversal below
-    this.scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); }); } });
-    this.floaters.dispose(); this.bldDepth.dispose(); this.shipfx.dispose(); this.phys.dispose();
-    this.env.dispose(); this.fog.tex.dispose(); this.buildGrid.tex.dispose(); this.tint.dispose();
+    this.actors.dispose(); // detach the model copies first: their geometry belongs to the AssetManager
+    const keep = new Set([groundTex.grass, groundTex.dirt, groundTex.sand, groundTex.rock]);
+    const report = this.cleaner.disposeObject(this.scene, { keep, detach: true });
+    for (const x of [this.envRT, this.fog.tex, this.buildGrid.tex, this.tint, this.bldDepth, this.floaters, this.shipfx, this.phys]) if (x) x.dispose();
+    this.r.renderLists.dispose();
+    return report;
   }
 }

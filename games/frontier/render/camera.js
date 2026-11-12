@@ -19,8 +19,9 @@
 //      leaves the terrain by more than BOUNDS.pad tiles. Velocity into a wall is dropped, so inertia
 //      never "sticks" to an edge. When zoomed out further than the map is wide, the view centres.
 //
-// The class owns its DOM listeners (attach/detach) and only reads input while `gate()` says so; the
-// game's Controller keeps clicks, selection and touch (touch pans through pan()/zoom()).
+// Input comes from the arcade's InputAdapter (bindInput): wheel and two-finger pinch zoom, middle-drag
+// and two-finger drag grab the ground, the keyboard axis pans, the mouse position drives edge scroll —
+// the same camera on desktop and touch. The game's Controller keeps clicks, selection and orders.
 
 const DEG = Math.PI / 180;
 export const CAMERA = {
@@ -54,8 +55,6 @@ export class RTSCameraController {
     this.insets = { top: 0, bottom: 0 };   // px of screen covered by HUD bars (excluded from the bounds)
     this.gate = () => true;                 // input allowed? (set by the game's Controller)
     this.clamped = { x: false, z: false };
-    this.keys = new Set();
-    this.mouse = { x: -1, y: -1, inside: false, mouse: true };
     this.grab = null;                       // middle-drag state
     this.zoomAnchor = null;                 // { ndcX, ndcY, x, z } ground point the wheel zoom keeps fixed
     this.ray = new THREE.Raycaster(); this.v2 = new THREE.Vector2(); this.v3 = new THREE.Vector3();
@@ -72,7 +71,7 @@ export class RTSCameraController {
     const t = (d - this.o.minDist) / (this.o.maxDist - this.o.minDist);
     return this.o.pitchNear + (this.o.pitchFar - this.o.pitchNear) * smooth(0, this.o.pitchEase, t);
   }
-  configure(s) { Object.assign(this.settings, s); }
+  configure(s) { Object.assign(this.settings, s); if (this.input) this.input.configure({ keys: this.settings.wasd ? "wasd" : "arrows" }); }
   setInsets(top, bottom) { this.insets.top = top; this.insets.bottom = bottom; }
   /** Jump to a ground point (minimap, alerts, hotkeys). Kills inertia. */
   focus(x, z) { this.tx = x; this.tz = z; this.vx = this.vz = 0; this.zoomAnchor = null; this.pitch = this.pitchFor(this.dist); this.place(); this.measureFootprint(); this.clamp(); }
@@ -87,60 +86,49 @@ export class RTSCameraController {
   }
 
   // ---------------------------------------------------------------- DOM
-  attach(canvas) {
-    this.detach();
-    const ac = this.ac = new AbortController(), sig = { signal: ac.signal };
-    this.canvas = canvas;
-    const typing = (e) => e.target && e.target.closest && e.target.closest("input,textarea,select");
-    addEventListener("keydown", (e) => {
-      if (typing(e) || e.ctrlKey || e.metaKey) return;
-      if (this.isPanKey(e.code) && !(e.altKey && e.code.startsWith("Key"))) { this.keys.add(e.code); if (e.code.startsWith("Arrow")) e.preventDefault(); }
-    }, sig);
-    addEventListener("keyup", (e) => this.keys.delete(e.code), sig);
-    addEventListener("blur", () => { this.keys.clear(); this.grab = null; }, sig);
-    canvas.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      if (!this.gate()) return;
-      const r = canvas.getBoundingClientRect();
-      this.zoom(e.deltaY * (e.deltaMode === 1 ? 30 : 1), ((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-    }, { passive: false, signal: ac.signal });
-    canvas.addEventListener("pointerdown", (e) => {
-      if (e.button !== 1 || e.pointerType === "touch" || !this.gate()) return;
-      e.preventDefault();
-      const n = this.ndc(e.clientX, e.clientY), p = this.groundPlane(n[0], n[1]);
-      if (!p) return;
-      this.grab = { x: p.x, z: p.z, sx: e.clientX, sy: e.clientY, hist: [[performance.now(), this.tx, this.tz]] };
-      this.vx = this.vz = 0; this.zoomAnchor = null;
-      try { canvas.setPointerCapture(e.pointerId); } catch {}
-    }, sig);
-    addEventListener("pointermove", (e) => {
-      this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.inside = true; this.mouse.mouse = e.pointerType !== "touch";
-      if (this.grab) { this.grab.sx = e.clientX; this.grab.sy = e.clientY; this.applyGrab(); } // follow at event rate
-    }, sig);
-    addEventListener("pointerup", (e) => {
-      if (e.button !== 1 || !this.grab) return;
-      // fling: the camera's speed over the last ~120 ms of the drag becomes the inertia
-      this.grab.sx = e.clientX; this.grab.sy = e.clientY; this.applyGrab();
-      const now = performance.now(), h = this.grab.hist, last = h[h.length - 1];
-      let vx = 0, vz = 0;
-      if (now - last[0] < 100) { // still moving at release (a drag that stopped first leaves no fling)
-        const ref = h.find((q) => q !== last && now - q[0] <= 150) || h[h.length - 2];
-        const sec = ref ? (last[0] - ref[0]) / 1000 : 0;
-        if (sec > 0.008) { vx = (last[1] - ref[1]) / sec; vz = (last[2] - ref[2]) / sec; }
-      }
-      const cap = this.o.panSpeed * (this.dist / 30) * 2.5, L = Math.hypot(vx, vz);
-      if (L > cap) { vx *= cap / L; vz *= cap / L; }
-      this.vx = vx; this.vz = vz;
-      this.grab = null;
-    }, sig);
-    canvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); }, sig);
-    document.addEventListener("mouseleave", () => (this.mouse.inside = false), sig);
-    document.addEventListener("mouseenter", () => (this.mouse.inside = true), sig);
+  /** Drive the camera from the arcade's InputAdapter (games/input-adapter.js): wheel / pinch zoom,
+   *  middle-drag / two-finger drag pan (grab-the-ground), keyboard axis and the pointer for edge scroll. */
+  bindInput(input, canvas) {
+    this.unbindInput();
+    this.input = input; this.canvas = canvas || input.el;
+    input.configure({ keys: this.settings.wasd ? "wasd" : "arrows" });
+    this.offs = [
+      input.on("zoom", (e) => { const n = this.ndc(e.x, e.y); this.zoomBy(e.scale, n[0], n[1]); }),
+      input.on("panstart", (e) => this.grabStart(e.x, e.y)),
+      input.on("pan", (e) => this.grabMove(e.x, e.y)),
+      input.on("panend", (e) => this.grabEnd(e.x, e.y)),
+    ];
   }
-  detach() { if (this.ac) this.ac.abort(); this.ac = null; this.keys.clear(); this.grab = null; }
-  isPanKey(code) {
-    return code === "ArrowUp" || code === "ArrowDown" || code === "ArrowLeft" || code === "ArrowRight" ||
-      (this.settings.wasd && (code === "KeyW" || code === "KeyA" || code === "KeyS" || code === "KeyD"));
+  unbindInput() { if (this.offs) this.offs.forEach((off) => off()); this.offs = null; this.grab = null; }
+  /** Old name: the camera no longer listens to the DOM itself. */
+  detach() { this.unbindInput(); }
+
+  /** Zoom by a factor (> 1 = closer); with ndc given, that ground point stays under it. */
+  zoomBy(scale, ndcX, ndcY) { this.zoom(-Math.log(scale) / Math.log(this.o.wheelBase), ndcX, ndcY); }
+
+  // grab-the-ground: the point under (x, y) at grabStart stays under the cursor / fingers' midpoint
+  grabStart(x, y) {
+    const n = this.ndc(x, y), p = this.groundPlane(n[0], n[1]);
+    if (!p) return;
+    this.grab = { x: p.x, z: p.z, sx: x, sy: y, hist: [[performance.now(), this.tx, this.tz]] };
+    this.vx = this.vz = 0; this.zoomAnchor = null;
+  }
+  grabMove(x, y) { if (!this.grab) return; this.grab.sx = x; this.grab.sy = y; this.applyGrab(); }
+  /** Release: the camera's speed over the last ~120 ms of the drag becomes the inertia (fling). */
+  grabEnd(x, y) {
+    if (!this.grab) return;
+    if (x !== undefined) { this.grab.sx = x; this.grab.sy = y; this.applyGrab(); }
+    const now = performance.now(), h = this.grab.hist, last = h[h.length - 1];
+    let vx = 0, vz = 0;
+    if (now - last[0] < 100) { // still moving at release (a drag that stopped first leaves no fling)
+      const ref = h.find((q) => q !== last && now - q[0] <= 150) || h[h.length - 2];
+      const sec = ref ? (last[0] - ref[0]) / 1000 : 0;
+      if (sec > 0.008) { vx = (last[1] - ref[1]) / sec; vz = (last[2] - ref[2]) / sec; }
+    }
+    const cap = this.o.panSpeed * (this.dist / 30) * 2.5, L = Math.hypot(vx, vz);
+    if (L > cap) { vx *= cap / L; vz *= cap / L; }
+    this.vx = vx; this.vz = vz;
+    this.grab = null;
   }
   ndc(cx, cy) {
     const r = this.canvas ? this.canvas.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
@@ -150,14 +138,10 @@ export class RTSCameraController {
   // ---------------------------------------------------------------- per frame
   /** Direction from keys + edge (x, z each -1..1; edge contributes a ramp). */
   inputDir() {
-    let x = 0, z = 0;
-    const k = this.keys;
-    if (k.has("ArrowLeft") || k.has("KeyA")) x -= 1;
-    if (k.has("ArrowRight") || k.has("KeyD")) x += 1;
-    if (k.has("ArrowUp") || k.has("KeyW")) z -= 1;
-    if (k.has("ArrowDown") || k.has("KeyS")) z += 1;
-    const m = this.mouse;
-    if (this.settings.edge && m.inside && m.mouse && !this.grab && document.hasFocus() && !(this.edgeBlocked && this.edgeBlocked())) {
+    if (!this.input) return [0, 0];
+    let [x, z] = this.input.axis();
+    const m = this.input.pointer;
+    if (this.settings.edge && this.input.device === "mouse" && m.inside && m.type !== "touch" && !this.grab && document.hasFocus() && !(this.edgeBlocked && this.edgeBlocked())) {
       const Z = EDGE.zone, w = innerWidth, h = innerHeight;
       const ramp = (d) => (d < Z ? Math.pow(1 - Math.max(0, d) / Z, EDGE.power) * 0.75 + 0.25 : 0);
       x += -ramp(m.x) + ramp(w - 1 - m.x);
@@ -171,7 +155,7 @@ export class RTSCameraController {
   update(dt) {
     const o = this.o;
     const on = this.gate();
-    if (!on) { this.keys.clear(); this.grab = null; }
+    if (!on) this.grab = null;
     // zoom: ease the distance, pitch follows the distance
     this.dist += (this.goalDist - this.dist) * damp(o.zoomDamp, dt);
     this.pitch = this.pitchFor(this.dist);

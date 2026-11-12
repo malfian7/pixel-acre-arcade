@@ -11,8 +11,10 @@ import { pathStats } from "./sim/path.js";
 import { MAPS } from "./sim/mapgen.js";
 import { Heightmap } from "./terrain/heightmap.js";
 import { View } from "./render/view.js";
-import { assets, UNIT_MODELS } from "./render/assets.js";
+import { assets, UNIT_MODELS, MODEL_BASE } from "./render/assets.js";
+import { AssetPipeline, loadManifest } from "../asset-pipeline.js";
 import { Controller } from "./input/input.js";
+import { InputAdapter } from "../input-adapter.js";
 import { HUD } from "./ui/hud.js";
 import { ICON } from "./ui/icons.js";
 import { CARDS_JSON, CARDS, DECK_SIZE } from "./data/cards.js";
@@ -41,18 +43,25 @@ const saveSettings = () => PA.store.set("fc:settings", settings);
 const L = { el: $("loading"), bar: $("loadBar"), txt: $("loadTxt"), pct: $("loadPct") };
 const stage = async (p, txt) => { L.bar.style.transform = `scaleX(${p})`; L.txt.textContent = txt; L.pct.textContent = Math.round(p * 100) + "%"; await new Promise((r) => setTimeout(r, THUMB ? 0 : 60)); };
 
-let renderer, sim = null, view = null, ctl = null, hud = null, loop = null, attract = false, match = null, paused = false;
+let renderer, input = null, sim = null, view = null, ctl = null, hud = null, loop = null, attract = false, match = null, paused = false;
 const speeds = [1, 1.5, 2]; let speedIdx = 0;
 
 async function boot() {
   await stage(0.08, "Unrolling the map");
   renderer = await PA.renderer(THREE, { clear: 0xcfe0ea, shadows: true });
+  // one InputAdapter for the page: mouse + keyboard and touch become the same intents (games/input-adapter.js)
+  input = new InputAdapter(renderer.domElement, { oneFingerDrag: "box" });
+  window.__fcInput = input;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   applyQuality();
   // rigged soldier models (.glb): fetched + parsed once, cached for every match (render/assets.js)
   if (Q.get("glb") !== "0") {
     await stage(0.12, "Drilling the regiments");
     const t0 = performance.now();
+    // the arcade's AssetPipeline: GLTFLoader with DRACO + KTX2, and assets.json's choice of variant
+    const SITE = new URL("../../", import.meta.url).href;
+    const pipe = new AssetPipeline(THREE, renderer, { manifest: ARCADE ? await loadManifest(SITE + "assets.json") : {}, base: SITE });
+    assets.useLoader((await pipe.loaders()).gltf, (file) => { const r = pipe.resolve("games/frontier/models/" + file); return r.kind === "plain" ? new URL(file, MODEL_BASE).href : pipe.abs(r.url); });
     const r = await assets.preload(UNIT_MODELS, (p) => { L.bar.style.transform = `scaleX(${0.12 + p * 0.12})`; L.pct.textContent = Math.round((0.12 + p * 0.12) * 100) + "%"; });
     window.__fcAssets = { assets, ...r, ms: Math.round(performance.now() - t0) };
   }
@@ -65,6 +74,8 @@ async function boot() {
   await stage(1, "Ready");
   L.el.classList.add("done");
   loop = fixedLoop({ step, render });
+  // leaving the page (back to the arcade): stop the loop and music; PA's SceneCleaner then frees the GPU
+  if (PA.cleaner) { PA.cleaner.track(assets); PA.cleaner.onLeave(() => { loop.stop(); OST.dispose(); input.dispose(); if (view) view.dispose(); }); }
   if (THUMB) return thumbShot();
   if (Q.has("skip") || AUTO) startMatch({ difficulty: +(Q.get("diff") ?? 1), seed: +(Q.get("seed") || 0) || undefined, map: Q.get("map") || "fords" });
   else titleMenu();
@@ -102,14 +113,14 @@ async function newWorld({ seed, difficulty = 1, attract: att = false, map = "for
   sim = new Sim({ seed: seed || 1000 + Math.floor(Math.random() * 9000), difficulty, map, heights, decks: [validateDeck(PA.store.get("fc:deck", null)), null] });
   sim.ais.push(new AIPlayer(sim, 1, difficulty));
   if (att || AUTO) sim.ais.push(new AIPlayer(sim, 0, att ? 1 : difficulty));
-  view = new View(renderer, sim, { me: 0, quality: settings.quality, assets, actorBudget: Q.has("actors") ? +Q.get("actors") : undefined });
+  view = new View(renderer, sim, { me: 0, quality: settings.quality, assets, input, actorBudget: Q.has("actors") ? +Q.get("actors") : undefined });
   view.cam.configure(camSettings());
   if (att) { view.fog.reveal = true; view.cam.goalDist = view.cam.dist = 30; view.cam.focus(26, 104); }
   if (ctl) ctl.dispose();
   if (hud) hud.dispose();
-  ctl = new Controller({ sim, view, me: 0, sfx: A.sfx, canvas: renderer.domElement, touch: TOUCH });
+  ctl = new Controller({ sim, view, me: 0, sfx: A.sfx, canvas: renderer.domElement, input });
   ctl.enabled = !att;
-  hud = new HUD({ sim, view, ctl, me: 0, sfx: A.sfx, touch: TOUCH, onMenu: () => pauseMenu(), onSpeed: cycleSpeed });
+  hud = new HUD({ sim, view, ctl, me: 0, sfx: A.sfx, input, onMenu: () => pauseMenu(), onSpeed: cycleSpeed });
   window.__fc = { OST, assets, THREE, sim, view, ctl, hud, records, settings, pathStats, startMatch, titleMenu, pauseMenu, resume, get loop() { return loop; }, DEF_LIST, CM };
 }
 
@@ -279,8 +290,8 @@ function howMenu(back) {
           <h3>Counters</h3><p>Pikemen and Musketeers beat cavalry · Hussars ride down cannon and villagers · Grenadiers and Falconets shred infantry and buildings · Skirmishers out-shoot infantry.</p>
         </div>
         <div>
-          <h3>${TOUCH ? "Touch" : "Mouse & keyboard"}</h3>
-          ${TOUCH ? `<ul><li>Tap to select; with units selected, tap the ground or a target to order them.</li><li>Drag to scroll · pinch to zoom · long-press to deselect.</li><li><b>Box</b> button: drag a box to select many.</li><li>Use the command card for buildings, training and Ages.</li></ul>`
+          <h3>${input.device === "touch" ? "Touch" : "Mouse & keyboard"}</h3>
+          ${input.device === "touch" ? `<ul><li><b>Tap</b> select (tap twice: every unit of that type on screen) · place buildings</li><li><b>Hold 0.4 s</b> (a ring fills) = order: move, gather, build, attack — the same as right-click</li><li><b>Drag one finger</b> box-select · <b>two fingers</b> drag to pan, pinch to zoom</li><li>Use the command card for buildings, training and Ages.</li></ul>`
           : `<ul><li><b>Left-click</b> select · <b>drag</b> box-select (soldiers first; <b>Shift</b>-drag keeps villagers too) · <b>double-click</b> all of a type</li><li><b>Right-click</b> move / gather / build / attack</li><li><b>Arrows</b> (or <b>WASD</b>, see Settings), screen-edge scroll or <b>middle-drag</b> to pan · <b>wheel</b> zooms toward the cursor and tilts the view near the ground</li><li><b>Q W E R T / A S D F G / Z X C V B</b> command card</li><li><b>H</b> Town Center · <b>.</b> idle villager · <b>Ctrl+1–9</b> groups · <b>Space</b> last alert</li><li><b>G</b> build grid (green buildable, red cliff/water/slope, amber occupied) · <b>F3</b> or <b>I</b> terrain inspector (X/Y/Z under the cursor) · <b>F4</b> Rival Crown AI overlay</li><li><b>Shift</b> train 5 · keep placing · add to selection · <b>Esc</b> cancel / pause</li></ul>`}
         </div>
       </div>
@@ -329,8 +340,8 @@ async function startMatch({ difficulty = 1, seed, map = "fords" } = {}) {
   hud.notify(`Found your colony. The Rival Crown (${LEVELS[difficulty].name}) lies across the river.`, "gold");
   if (!PA.store.get("fc:tipsSeen", false) && !AUTO) {
     PA.store.set("fc:tipsSeen", true);
-    setTimeout(() => hud.notify(TOUCH ? "Tip: tap a villager, then tap a berry bush or tree to gather." : "Tip: select villagers and right-click berries, trees or gold to gather.", ""), 2500);
-    setTimeout(() => hud.notify(TOUCH ? "Tip: tap your Town Center, then the villager button to train more." : "Tip: select your Town Center (H) and train more villagers (Q).", ""), 9000);
+    setTimeout(() => hud.notify(input.device === "touch" ? "Tip: tap a villager, then hold your finger on a berry bush or tree to gather." : "Tip: select villagers and right-click berries, trees or gold to gather.", ""), 2500);
+    setTimeout(() => hud.notify(input.device === "touch" ? "Tip: tap your Town Center, then the villager button to train more." : "Tip: select your Town Center (H) and train more villagers (Q).", ""), 9000);
   }
 }
 

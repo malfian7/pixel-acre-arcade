@@ -1,5 +1,6 @@
 // Pixel Acre Arcade — shared helpers for every game page.
 // ES module. Import with: import { PA } from "./common.js";
+import { cleanerFor } from "./scene-cleaner.js";
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("pa:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -222,20 +223,30 @@ async function renderer(THREE, { clear = 0x17122b, shadows = true } = {}) {
   r.toneMappingExposure = 1.05;
   r.domElement.className = "game";
   document.body.prepend(r.domElement);
+  // GPU hygiene for every game: whatever it rendered is disposed when the player leaves the page
+  // (back to the hub), the WebGL context is dropped, and a bfcache restore reloads cleanly.
+  const cleaner = cleanerFor(r, { name: location.pathname.split("/").pop() });
+  cleaner.onLeave(() => { for (const l of loops) l.stop(); stopMusic(); });
+  cleaner.installPageLifecycle();
+  PA.cleaner = cleaner;
   return r;
 }
 function onResize(fn) { addEventListener("resize", fn); fn(); }
 
 // Fixed-step-friendly loop with pause support. update(dt, t) returns nothing.
+const loops = [];
 function loop(update) {
-  let last = performance.now(), paused = false, raf = 0;
+  let last = performance.now(), paused = false, raf = 0, stopped = false;
   const frame = (now) => {
+    if (stopped) return;
     raf = requestAnimationFrame(frame);
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
     update(paused ? 0 : dt, now / 1000, paused);
   };
   raf = requestAnimationFrame(frame);
-  return { pause() { paused = true; }, resume() { paused = false; last = performance.now(); }, get paused() { return paused; } };
+  const api = { pause() { paused = true; }, resume() { paused = false; last = performance.now(); }, get paused() { return paused; }, stop() { stopped = true; cancelAnimationFrame(raf); } };
+  loops.push(api);
+  return api;
 }
 
 function best(key, score, higherIsBetter = true) {
@@ -245,5 +256,5 @@ function best(key, score, higherIsBetter = true) {
   return { best: isBest ? score : prev, isNew: isBest && prev != null };
 }
 
-export const PA = { store, THUMB, REDUCED, TOUCH, sfx, music, stopMusic, setMuted, get muted() { return muted; }, sayJP, ctx,
+export const PA = { cleaner: null, store, THUMB, REDUCED, TOUCH, sfx, music, stopMusic, setMuted, get muted() { return muted; }, sayJP, ctx,
   el, topBar, overlay, closeOverlay, overlayOpen, toast, keys, axis, touchControls, renderer, onResize, loop, best, params };

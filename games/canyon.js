@@ -599,7 +599,9 @@ const ENV = (() => {   // a small sky-and-sand environment for glossy paint and 
   g.setAttribute("color", new THREE.BufferAttribute(col, 3));
   es.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
   const sunB = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 5, 4) })); sunB.position.copy(sunDir).multiplyScalar(9); es.add(sunB);
-  const pm = new THREE.PMREMGenerator(renderer), t = pm.fromScene(es, 0.03).texture; pm.dispose(); return t;
+  const pm = new THREE.PMREMGenerator(renderer), rt = pm.fromScene(es, 0.03); pm.dispose();
+  PA.cleaner.disposeObject(es); PA.cleaner.track(rt); // the bake scene is done; the target lives until the page closes
+  return rt.texture;
 })();
 function loft(sections, N = 28) {
   const S = sections.length, pos = new Float32Array((S * N + 2) * 3), idx = [];

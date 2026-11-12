@@ -1,4 +1,9 @@
-// Frontier Crown — input → selection + commands. Mouse/keyboard and landscape touch.
+// Frontier Crown — input → selection + commands. Mouse/keyboard and touch through one InputAdapter
+// (games/input-adapter.js): the controller only sees intents, the same on every device —
+//   primary   (left click / tap)                 select, place a building, aim an attack-move
+//   secondary (right click / long press 0.4 s)   smart order: move, gather, build, attack; cancels a mode
+//   drag      (left drag / one-finger drag)       box select
+//   (wheel, pinch, middle / two-finger drag and the pan keys go to the camera)
 // The controller never edits the world: every action becomes a command for the sim.
 
 import { DEFS, DEF_LIST, C } from "../data/defs.js";
@@ -6,15 +11,15 @@ import { CM, S } from "../sim/ecs.js";
 import { W, H, BC, SLOPE_BUILD, SLOPE_CLIFF, T } from "../sim/map.js";
 
 export class Controller {
-  constructor({ sim, view, me = 0, sfx, canvas, touch = false }) {
-    this.sim = sim; this.view = view; this.me = me; this.sfx = sfx || (() => {}); this.canvas = canvas; this.touch = touch;
+  constructor({ sim, view, me = 0, sfx, canvas, input }) {
+    this.sim = sim; this.view = view; this.me = me; this.sfx = sfx || (() => {}); this.canvas = canvas;
+    this.input = input;
     this.sel = view.selection;
     this.mode = null;            // {kind:'place', def} | {kind:'amove'}
     this.groups = new Map(); this.lastGroupKey = null; this.lastGroupT = 0;
-    this.mouse = { x: innerWidth / 2, y: innerHeight / 2, inside: false };
-    this.drag = null; this.mid = null; this.keys = new Set();
+    this.mouse = input.pointer;   // { x, y, inside, type } kept up to date by the adapter
+    this.box = null; this.keys = new Set();
     this.lastClick = { t: 0, e: -1 };
-    this.boxMode = false;
     this.lastAlert = null;
     this.onChange = () => {};
     this.enabled = true;
@@ -158,72 +163,54 @@ export class Controller {
   }
 
   // ------------------------------------------------------------------ binding
-  dispose() { this.enabled = false; this.ac.abort(); }
+  get touch() { return this.input.device === "touch"; }
   bind() {
-    const cv = this.canvas, sig = { signal: this.ac.signal };
-    cv.addEventListener("contextmenu", (e) => e.preventDefault(), sig);
-    this.pointers = new Map();
-    cv.addEventListener("pointerdown", (e) => this.down(e), sig);
-    addEventListener("pointermove", (e) => this.move(e), sig);
-    addEventListener("pointerup", (e) => this.up(e), sig);
-    addEventListener("pointercancel", (e) => { this.pointers.delete(e.pointerId); this.drag = null; this.hideBox(); }, sig);
-    // wheel zoom, middle-drag, arrow/WASD keys and edge scrolling belong to the camera (render/camera.js)
+    const I = this.input, sig = { signal: this.ac.signal };
+    I.gate = () => this.enabled;
     this.view.cam.gate = () => this.enabled;
-    this.view.cam.edgeBlocked = () => !!(this.drag && this.drag.box);
-    document.addEventListener("mouseleave", () => (this.mouse.inside = false), sig);
-    document.addEventListener("mouseenter", () => (this.mouse.inside = true), sig);
+    this.view.cam.edgeBlocked = () => !!this.box;
+    this.offs = [
+      I.on("primary", (e) => this.onPrimary(e)),
+      I.on("secondary", (e) => this.onSecondary(e)),
+      I.on("dragstart", (e) => this.onBox(e)), I.on("drag", (e) => this.onBox(e)),
+      I.on("dragend", (e) => this.onBoxEnd(e)), I.on("dragcancel", () => { this.box = null; this.hideBox(); }),
+      I.on("device", (e) => this.onDevice(e.kind)),
+    ];
+    this.onDevice(I.device);
     addEventListener("keydown", (e) => this.key(e, true), sig);
     addEventListener("keyup", (e) => this.key(e, false), sig);
     addEventListener("blur", () => this.keys.clear(), sig);
   }
-  down(e) {
-    if (!this.enabled) return;
-    this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.inside = true;
-    if (e.pointerType === "touch") return this.touchDown(e);
-    if (e.button === 1) return; // camera grab (render/camera.js)
-    if (e.button === 2) {
-      if (this.mode) { this.mode = null; return; }
-      this.rdown = { x: e.clientX, y: e.clientY };
-      return;
-    }
-    if (e.button === 0) this.drag = { x: e.clientX, y: e.clientY, box: false };
+  dispose() { this.enabled = false; this.ac.abort(); this.offs.forEach((off) => off()); this.hideBox(); }
+  onDevice(kind) { document.body.classList.toggle("touch", kind === "touch"); this.onChange(); }
+
+  /** Left click / tap: place, attack-move target, or select (double = every unit of that type on screen). */
+  onPrimary({ x, y, shift, double }) {
+    const h = this.view.cam.ground(x / innerWidth * 2 - 1, -(y / innerHeight) * 2 + 1); if (h && h.nx !== undefined) this.lastGroundClick = h;
+    if (this.mode && this.mode.kind === "place") { this.place(x, y, shift); return; }
+    if (this.mode && this.mode.kind === "amove") { this.attackMove(x, y); return; }
+    const { e: hit } = this.view.pick(x, y, innerWidth, innerHeight);
+    const dbl = double && hit >= 0 && hit === this.lastClick.e;
+    this.lastClick = { t: performance.now(), e: hit };
+    this.clickSelect(x, y, shift, dbl);
   }
-  move(e) {
-    this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.inside = true;
-    if (!this.enabled) return;
-    if (e.pointerType === "touch") return this.touchMove(e);
-    if (this.drag && !this.mode) {
-      const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
-      if (!this.drag.box && Math.hypot(dx, dy) > 7) this.drag.box = true;
-      if (this.drag.box) { this.showBox(this.drag.x, this.drag.y, e.clientX, e.clientY); this.previewBox(this.drag.x, this.drag.y, e.clientX, e.clientY); }
-    }
+  /** Right click / long press: cancel a pending mode, else the smart order for the selection. */
+  onSecondary({ x, y, source }) {
+    if (this.mode) { this.mode = null; this.view.setGhost(null); this.onChange(); return; }
+    this.smartCommand(x, y); // (shows its own marker + sound; a long press also buzzed via the adapter)
   }
-  up(e) {
-    if (e.pointerType === "touch") return this.touchUp(e);
-    if (e.button === 1) return;
-    if (!this.enabled) { this.drag = null; this.hideBox(); return; }
-    if (e.button === 2 && this.rdown) {
-      if (Math.hypot(e.clientX - this.rdown.x, e.clientY - this.rdown.y) < 12 && e.target === this.canvas) this.smartCommand(e.clientX, e.clientY);
-      this.rdown = null; return;
-    }
-    if (e.button !== 0 || !this.drag) return;
-    const d = this.drag; this.drag = null;
-    if (!d.box && e.target === this.canvas) { const h = this.view.cam.ground(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); if (h && h.nx !== undefined) this.lastGroundClick = h; }
-    if (this.mode && this.mode.kind === "place") { if (e.target === this.canvas) this.place(e.clientX, e.clientY, e.shiftKey); return; }
-    if (this.mode && this.mode.kind === "amove") { if (e.target === this.canvas) this.attackMove(e.clientX, e.clientY); return; }
-    if (d.box) {
-      this.hideBox();
-      const ids = this.filterBox(this.view.boxSelect(Math.min(d.x, e.clientX), Math.min(d.y, e.clientY), Math.max(d.x, e.clientX), Math.max(d.y, e.clientY), innerWidth, innerHeight), e.shiftKey);
-      if (ids.length) { this.setSel(ids, e.shiftKey); this.sfx("select", { ui: true }); }
-      else if (!e.shiftKey) this.clearSel();
-      return;
-    }
-    if (e.target !== this.canvas) return;
-    const now = performance.now();
-    const { e: hit } = this.view.pick(e.clientX, e.clientY, innerWidth, innerHeight);
-    const dbl = now - this.lastClick.t < 320 && hit === this.lastClick.e && hit >= 0;
-    this.lastClick = { t: now, e: hit };
-    this.clickSelect(e.clientX, e.clientY, e.shiftKey, dbl);
+  onBox({ x0, y0, x, y }) {
+    if (this.mode) return;
+    this.box = { x0, y0, x, y };
+    this.showBox(x0, y0, x, y); this.previewBox(x0, y0, x, y);
+  }
+  onBoxEnd({ x0, y0, x, y, shift }) {
+    if (this.mode) { this.onPrimary({ x, y, shift, double: false }); return; } // a sloppy click while placing
+    if (!this.box) return;
+    this.box = null; this.hideBox();
+    const ids = this.filterBox(this.view.boxSelect(Math.min(x0, x), Math.min(y0, y), Math.max(x0, x), Math.max(y0, y), innerWidth, innerHeight), shift);
+    if (ids.length) { this.setSel(ids, shift); this.sfx("select", { ui: true }); }
+    else if (!shift) this.clearSel();
   }
   showBox(x0, y0, x1, y1) {
     if (!this.boxEl) return;
@@ -241,55 +228,6 @@ export class Controller {
     if (keepAll) return ids;
     const st = this.sim.st, mil = ids.filter((e) => !(st.mask[e] & CM.GATHERER));
     return mil.length && mil.length < ids.length ? mil : ids;
-  }
-
-  // ---- touch: tap = select / smart order, one-finger drag = pan (or box in box mode), pinch = zoom
-  touchDown(e) {
-    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now() });
-    if (this.pointers.size === 2) { const [a, b] = [...this.pointers.values()]; this.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), moved: true }; }
-  }
-  touchMove(e) {
-    const p = this.pointers.get(e.pointerId); if (!p) return;
-    const px = p.x, py = p.y; p.x = e.clientX; p.y = e.clientY;
-    if (this.pointers.size >= 2) {
-      const [a, b] = [...this.pointers.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
-      if (this.pinch) { this.view.cam.zoom((this.pinch.d - d) * 4); this.pinch.d = d; }
-      this.view.cam.pan(-(e.clientX - px) * 0.03, -(e.clientY - py) * 0.03);
-      return;
-    }
-    if (Math.hypot(p.x - p.sx, p.y - p.sy) > 12) p.moved = true;
-    if (!p.moved) return;
-    if (this.boxMode && !this.mode) { this.showBox(p.sx, p.sy, p.x, p.y); this.previewBox(p.sx, p.sy, p.x, p.y); }
-    else this.view.cam.pan(-(e.clientX - px) * 0.075, -(e.clientY - py) * 0.075);
-  }
-  touchUp(e) {
-    const p = this.pointers.get(e.pointerId); this.pointers.delete(e.pointerId);
-    if (this.pointers.size === 0) this.pinch = null;
-    if (!p || !this.enabled) return;
-    if (p.moved) {
-      if (this.boxMode && !this.mode) {
-        this.hideBox();
-        const ids = this.filterBox(this.view.boxSelect(Math.min(p.sx, p.x), Math.min(p.sy, p.y), Math.max(p.sx, p.x), Math.max(p.sy, p.y), innerWidth, innerHeight), false);
-        if (ids.length) { this.setSel(ids); this.sfx("select", { ui: true }); }
-        this.boxMode = false; this.onChange();
-      }
-      return;
-    }
-    if (e.target !== this.canvas) return;
-    const long = performance.now() - p.t > 550;
-    if (this.mode && this.mode.kind === "place") { this.place(p.x, p.y, false); return; }
-    if (this.mode && this.mode.kind === "amove") { this.attackMove(p.x, p.y); return; }
-    if (long) { this.clearSel(); return; }
-    // tap: own thing → select; anything else with own units/producers selected → order
-    const { e: hit } = this.view.pick(p.x, p.y, innerWidth, innerHeight);
-    const st = this.sim.st;
-    const haveOrders = this.units().length || [...this.sel].some((b) => this.own(b) && (st.mask[b] & CM.PRODUCER));
-    const tapOwn = hit >= 0 && this.own(hit) && (st.mask[hit] & (CM.UNIT | CM.BUILDING));
-    const tapOwnSite = tapOwn && (st.mask[hit] & CM.BUILDING) && (st.prog[hit] < 1 || DEF_LIST[st.def[hit]].farm) && this.villagers().length;
-    if (haveOrders && (!tapOwn || tapOwnSite)) { this.smartCommand(p.x, p.y); return; }
-    const now = performance.now(), dbl = now - this.lastClick.t < 350 && hit === this.lastClick.e && hit >= 0;
-    this.lastClick = { t: now, e: hit };
-    this.clickSelect(p.x, p.y, false, dbl);
   }
 
   key(e, down) {

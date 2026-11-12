@@ -31,11 +31,16 @@ export class AssetManager {
     this.stats = { requests: 0, clones: 0, reused: 0 };
   }
 
+  /** Use another GLTFLoader (e.g. the AssetPipeline's, with DRACO + KTX2) and a URL resolver that
+   *  picks the compressed variant named in assets.json. */
+  useLoader(loader, resolve) { this.loader = loader; this.resolveUrl = resolve; }
+
   /** Load one model (cached: a second call for the same name returns the same promise). */
   load(name, file = UNIT_MODELS[name], onBytes) {
     if (this.cache.has(name)) return this.cache.get(name);
     this.stats.requests++;
-    const p = this.loader.loadAsync(new URL(file, this.base).href, (e) => onBytes && onBytes(e.loaded, e.total || 0))
+    const url = this.resolveUrl ? this.resolveUrl(file) : new URL(file, this.base).href;
+    const p = this.loader.loadAsync(url, (e) => onBytes && onBytes(e.loaded, e.total || 0))
       .then((gltf) => {
         const t = prepare(name, gltf);
         this.ready.set(name, t);

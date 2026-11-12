@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Input lab — Pixel Acre Arcade</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #17122b; color: #eadfc8; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #log { position: fixed; left: 12px; bottom: 12px; right: 12px; max-height: 40vh; overflow: hidden; font: 12px/1.45 ui-monospace, monospace; pointer-events: none; white-space: pre; }
+  #dev { position: fixed; left: 12px; top: 12px; padding: 6px 10px; border-radius: 8px; background: #2a2147; pointer-events: none; }
+</style></head><body>
+<canvas id="c"></canvas><div id="dev"></div><pre id="log"></pre>
+<script type="module">
+// Dev tool: every intent the InputAdapter emits, live — try it with a mouse and on a phone.
+import { InputAdapter } from "../input-adapter.js";
+const cv = document.getElementById("c"), g = cv.getContext("2d"), log = document.getElementById("log"), dev = document.getElementById("dev");
+const fit = () => { cv.width = innerWidth * devicePixelRatio; cv.height = innerHeight * devicePixelRatio; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); };
+addEventListener("resize", fit); fit();
+const input = new InputAdapter(cv, { oneFingerDrag: "box", keys: "wasd" });
+const lines = [], marks = [];
+const say = (s) => { lines.unshift(s); lines.length = Math.min(lines.length, 40); log.textContent = lines.join("\n"); };
+const f = (n) => Math.round(n);
+for (const t of ["primary", "secondary", "dragstart", "dragend", "dragcancel", "panstart", "panend", "device"]) input.on(t, (e) => {
+  say(`${t.padEnd(10)} ${e.source || e.kind || ""} ${e.x != null ? f(e.x) + "," + f(e.y) : ""}${e.double ? " double" : ""}`);
+  if (e.x != null) marks.push({ x: e.x, y: e.y, t: performance.now(), c: t === "secondary" ? "#f27c8c" : t === "primary" ? "#86d9a6" : "#8fb8ff" });
+});
+let box = null, zoom = 1, pan = null, off = [0, 0];
+input.on("drag", (e) => (box = e)); input.on("dragend", () => (box = null)); input.on("dragcancel", () => (box = null));
+input.on("zoom", (e) => { zoom = Math.max(0.3, Math.min(4, zoom * e.scale)); say(`zoom       ${e.source} ×${e.scale.toFixed(3)} → ${zoom.toFixed(2)}`); });
+input.on("panstart", (e) => (pan = { x: e.x, y: e.y })); input.on("pan", (e) => { if (pan) { off[0] += e.x - pan.x; off[1] += e.y - pan.y; pan = { x: e.x, y: e.y }; } }); input.on("panend", () => (pan = null));
+window.__lab = { input, get zoom() { return zoom; }, get off() { return off; }, lines };
+(function draw() {
+  const W = innerWidth, H = innerHeight, now = performance.now(), [ax, az] = input.axis();
+  off[0] -= ax * 4; off[1] -= az * 4;
+  g.clearRect(0, 0, W, H);
+  g.save(); g.translate(W / 2 + off[0], H / 2 + off[1]); g.scale(zoom, zoom); g.strokeStyle = "#3a2f5e";
+  for (let i = -20; i <= 20; i++) { g.beginPath(); g.moveTo(i * 40, -800); g.lineTo(i * 40, 800); g.moveTo(-800, i * 40); g.lineTo(800, i * 40); g.stroke(); }
+  g.restore();
+  for (let i = marks.length - 1; i >= 0; i--) { const m = marks[i], k = (now - m.t) / 700; if (k > 1) { marks.splice(i, 1); continue; } g.strokeStyle = m.c; g.globalAlpha = 1 - k; g.lineWidth = 3; g.beginPath(); g.arc(m.x, m.y, 10 + k * 26, 0, 7); g.stroke(); g.globalAlpha = 1; }
+  if (box) { g.strokeStyle = "#86d9a6"; g.setLineDash([6, 4]); g.strokeRect(box.x0, box.y0, box.x - box.x0, box.y - box.y0); g.setLineDash([]); }
+  dev.textContent = `device: ${input.device} · keys ${ax},${az} · zoom ${zoom.toFixed(2)}`;
+  requestAnimationFrame(draw);
+})();
+</script></body></html>

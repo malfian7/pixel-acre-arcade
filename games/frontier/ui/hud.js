@@ -19,12 +19,12 @@ const fmt = (n) => String(Math.floor(n));
 const costHTML = (cost) => cost.map((c, i) => (c ? `<span class="c">${ICON[RES[i]]}${c}</span>` : "")).join("");
 
 export class HUD {
-  constructor({ sim, view, ctl, me = 0, sfx, onMenu, onSpeed, touch }) {
-    this.sim = sim; this.view = view; this.ctl = ctl; this.me = me; this.sfx = sfx; this.onMenu = onMenu; this.onSpeed = onSpeed; this.touch = touch;
+  constructor({ sim, view, ctl, me = 0, sfx, onMenu, onSpeed, input }) {
+    this.sim = sim; this.view = view; this.ctl = ctl; this.me = me; this.sfx = sfx; this.onMenu = onMenu; this.onSpeed = onSpeed; this.input = input;
     this.el = {
       food: $("rFood"), wood: $("rWood"), coin: $("rCoin"), rates: [$("rateFood"), $("rateWood"), $("rateCoin")], pop: $("rPop"), age: $("ageName"), ageBar: $("ageBar"), clock: $("clock"),
       card: $("card"), sel: $("selPanel"), feed: $("feed"), tip: $("tip"), idle: $("idleBtn"), idleN: $("idleN"),
-      ship: $("shipPanel"), shipBtn: $("shipBtn"), xpFill: $("xpFill"), shipN: $("shipN"), shipT: $("shipT"), mini: $("mini"), speed: $("btnSpeed"), boxBtn: $("tBox"), topbar: $("topbar"), bottom: $("bottom"),
+      ship: $("shipPanel"), shipBtn: $("shipBtn"), xpFill: $("xpFill"), shipN: $("shipN"), shipT: $("shipT"), mini: $("mini"), speed: $("btnSpeed"), topbar: $("topbar"), bottom: $("bottom"),
     };
     this.seenNew = new Set(); // "NEW" badges the player has already used
     this.prev = {}; this.cardSig = ""; this.selSig = ""; this.selT = 0; this.miniT = 0; this.idleT = 0; this.pings = [];
@@ -50,6 +50,7 @@ export class HUD {
     this.el.age.parentElement.addEventListener("click", () => this.ctl.selectTC(), { signal: this.ac.signal });
   }
 
+  get touch() { return this.input ? this.input.device === "touch" : false; }
   camKey(k) { return this.view.cam.settings.wasd && (k === "W" || k === "A" || k === "S" || k === "D"); }
   hotLabel(i) { return (this.camKey(HOT[i]) ? "Alt+" : "") + HOT[i]; }
   /** Settings changed (camera keys): relabel the command card. */
@@ -71,7 +72,6 @@ export class HUD {
     this.el.idle.addEventListener("click", () => this.ctl.idleVillager(), sig);
     this.el.speed.addEventListener("click", () => this.onSpeed && this.onSpeed(), sig);
     $("btnMenu").addEventListener("click", () => this.onMenu && this.onMenu(), sig);
-    if (this.el.boxBtn) this.el.boxBtn.addEventListener("click", () => { this.ctl.boxMode = !this.ctl.boxMode; this.el.boxBtn.classList.toggle("on", this.ctl.boxMode); }, sig);
     const dsel = $("tDesel"); if (dsel) dsel.addEventListener("click", () => this.ctl.clearSel(), sig);
     const tarmy = $("tArmy"); if (tarmy) tarmy.addEventListener("click", () => this.ctl.allMilitary(), sig);
     // minimap
@@ -198,7 +198,7 @@ export class HUD {
     const sim = this.sim, st = sim.st, ctl = this.ctl;
     const sel = [...ctl.sel].filter((e) => st.alive[e]);
     const el = this.el.sel;
-    if (!sel.length) { el.innerHTML = `<div class="empty-sel">${this.touch ? "Tap a unit or building to select it. Drag to scroll, pinch to zoom." : "Left-click to select · drag a box for many · right-click to order"}</div>`; return; }
+    if (!sel.length) { el.innerHTML = `<div class="empty-sel">${this.touch ? "Tap to select · hold 0.4 s to order · drag a box for many · two fingers pan & zoom" : "Left-click to select · drag a box for many · right-click to order"}</div>`; return; }
     if (sel.length === 1) {
       const e = sel[0], d = DEF_LIST[st.def[e]], o = st.owner[e];
       const team = TEAM_CSS[o] || "#c9b27a";
