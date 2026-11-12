@@ -23,7 +23,9 @@ export const CROPS = {
   cabbage:    { name: "Frost Cabbage", season: 3, days: 6, regrow: 0, seed: 90, sell: 240, shape: "big", fruit: "#bfe3a8", leaf: "#8cc47a", leafy: true },
 };
 
-// Inventory items. kind: seed | crop | produce | food | feed
+import { FISH } from "./farm/fishing.js";
+
+// Inventory items. kind: seed | crop | produce | food | feed | fish | material
 export const ITEMS = {};
 for (const [id, c] of Object.entries(CROPS)) {
   ITEMS[id + "_seed"] = { name: c.name + " seeds", kind: "seed", crop: id, color: c.fruit, price: c.seed };
@@ -36,13 +38,18 @@ Object.assign(ITEMS, {
   fodder:   { name: "Fodder",      kind: "feed",    price: 10, color: "#d9b45a", accent: "#a8862f" },
   onigiri:  { name: "Rice ball",   kind: "food",    price: 60, color: "#ffffff", accent: "#2b3a2b", energy: 35 },
   tea:      { name: "Barley tea",  kind: "food",    price: 120, color: "#c98d4a", accent: "#7a4a1f", energy: 80 },
+  wool:     { name: "Wool",        kind: "produce", sell: 140, color: "#f6f1e7", accent: "#c9bfa9" },
+  wood:     { name: "Wood",        kind: "material", sell: 8,  color: "#b07a45", accent: "#6b4430" },
+  stone:    { name: "Stone",       kind: "material", sell: 6,  color: "#a9a3b8", accent: "#6f6a80" },
 });
+for (const [id, f] of Object.entries(FISH)) ITEMS[id] = { name: f.name, kind: "fish", sell: f.sell, color: f.color, accent: f.accent };
 
 export const UPGRADES = {
-  can2:    { name: "Copper watering can", desc: "Holds 40 and waters 3 tiles in a row.", price: 1200 },
-  hoe2:    { name: "Copper hoe",          desc: "Tills 3 tiles in a row with one swing.", price: 1000 },
-  chicken: { name: "New hen",             desc: "One more hen for the coop (up to 6).",  price: 700 },
-  stamina: { name: "Comfy bedroll",       desc: "Raises your max energy by 20.",         price: 1500 },
+  can2:    { name: "Copper watering can", desc: "Holds 40 and waters 3 tiles in a row.", price: 1200, mats: { stone: 10 } },
+  hoe2:    { name: "Copper hoe",          desc: "Tills 3 tiles in a row with one swing.", price: 1000, mats: { stone: 8 } },
+  chicken: { name: "New hen",             desc: "One more hen for the coop (up to 6).",  price: 700, mats: { wood: 6 } },
+  sheep:   { name: "New sheep",           desc: "One more sheep for the pasture (up to 4). Fed sheep grow wool every 2 days.", price: 1100, mats: { wood: 10 } },
+  stamina: { name: "Comfy bedroll",       desc: "Raises your max energy by 20.",         price: 1500, mats: { wood: 12 } },
 };
 
 // Neighbors. Each line pairs the English text shown on screen with a short
@@ -69,8 +76,8 @@ export const NPCS = {
     closed: { en: "The store's closed right now. Open 9 AM to 5 PM!", jp: "今はお休みだよ。" },
   },
   tomo: {
-    name: "Tomo", role: "Retired farmer", color: "#8fb8ff", hair: "#d8d8d8", shirt: "#4f6d8f", pitch: 0.7,
-    likes: ["potato", "yam", "pumpkin", "milk"], dislikes: ["melon"], shop: null,
+    name: "Tomo", role: "Retired farmer &amp; angler", color: "#8fb8ff", hair: "#d8d8d8", shirt: "#4f6d8f", pitch: 0.7,
+    likes: ["potato", "yam", "pumpkin", "milk", "trout", "catfish"], dislikes: ["melon"], shop: null,
     greet: {
       morning: { en: "Mm. Early riser. Good.", jp: "おはよう。" },
       day:     { en: "The pond's calm today. Sit a while.", jp: "こんにちは。" },
@@ -90,7 +97,7 @@ export const NPCS = {
   },
   kenji: {
     name: "Kenji", role: "Carpenter & tools", color: "#f4a63a", hair: "#2b1f1a", shirt: "#3f8f6a", pitch: 0.95,
-    likes: ["corn", "tomato", "egg", "milk"], dislikes: ["turnip"], shop: "workshop",
+    likes: ["corn", "tomato", "egg", "milk", "wood"], dislikes: ["turnip"], shop: "workshop",
     greet: {
       morning: { en: "Morning! The saw's sharp and so am I.", jp: "おはよう！" },
       day:     { en: "Hey, farmer! Here for an upgrade?", jp: "よう！" },
@@ -122,6 +129,9 @@ export const GOALS = [
   { id: "earn1k",  text: "Earn 1,000 G in total",           need: 1000,  stat: "earned" },
   { id: "upgrade", text: "Buy something from Kenji",        need: 1,     stat: "upgrades" },
   { id: "big",     text: "Harvest a melon, pumpkin or cabbage", need: 1, stat: "bigHarvest" },
+  { id: "wood",    text: "Chop 10 wood in Whisper Woods",   need: 10,    stat: "wood" },
+  { id: "fish",    text: "Catch a fish",                    need: 1,     stat: "fish" },
+  { id: "wool",    text: "Shear wool from a sheep",         need: 1,     stat: "wool" },
   { id: "earn10k", text: "Earn 10,000 G in total",          need: 10000, stat: "earned" },
 ];
 
@@ -129,6 +139,6 @@ export const GOALS = [
 export const HINTS = [
   { until: "till",  text: "Walk to the brown field, pick the Hoe (1) and press Space to till." },
   { until: "plant", text: "Pick Seeds (3) and press Space on tilled soil to plant." },
-  { until: "water", text: "Pick the Can (2) and water your seeds. Refill at the well or pond." },
+  { until: "water", text: "Pick the Can (2) and water your seeds. Refill at the well beside the field." },
   { until: null,    text: "Crops grow overnight when watered. Press E at your front door to sleep." },
 ];

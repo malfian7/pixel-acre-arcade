@@ -84,8 +84,12 @@
     .c-time { font-size: 20px; }
     #meters .panel { width: 140px; }
     .meter { grid-template-columns: 44px 1fr 26px; }
-    .slot { width: 48px; height: 48px; }
-    .slot svg, .slot img { width: 28px; height: 28px; }
+    .slot { width: 42px; height: 46px; border-radius: 9px; }
+    .slot svg, .slot img { width: 26px; height: 26px; }
+    .hotbar { gap: 4px; padding: 5px; }
+    #dock { gap: 6px; }
+    .side { padding: 5px; gap: 5px; }
+    .side .pa-chip { height: 28px; font-size: 11px; padding: 0 9px; }
     .pa-title { display: none; }
   }
 
@@ -130,10 +134,21 @@
   .sum b { font: 400 14px/1.2 var(--font-pixel); text-align: right; font-variant-numeric: tabular-nums; }
   .sum .tot { border-top: 1px solid var(--dusk-2); padding-top: 8px; font-weight: 700; }
   .pa-toast { top: calc(118px + env(safe-area-inset-top, 0px)); }
+  /* zone banner */
+  #zone {
+    left: 50%; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 8px); opacity: 0; pointer-events: none;
+    font: 400 17px/1 var(--font-display); letter-spacing: .03em; color: var(--mist); padding: 9px 18px 10px; border-radius: 999px;
+    background: color-mix(in srgb, var(--night) 72%, transparent); border: 1px solid color-mix(in srgb, var(--marigold) 45%, transparent);
+    transition: opacity .45s ease, transform .45s var(--ease-out);
+  }
+  #zone.show { opacity: 1; transform: translate(-50%, 0); }
+  body.touch #zone { bottom: calc(310px + env(safe-area-inset-bottom, 0px)); }
+  .row small .short { color: var(--rose); }
+  @media (prefers-reduced-motion: reduce) { #zone { transition: opacity .2s; transform: translate(-50%, 0); } }
   #fade { position: fixed; inset: 0; z-index: 35; background: #0b0816; opacity: 0; pointer-events: none; transition: opacity .6s ease; }
   #fade.on { opacity: 1; }
 </style>
-<script type="importmap">{"imports":{"three":"../lib/three.module.min.js"}}</script>
+<script type="importmap">{"imports":{"three":"../lib/three.module.min.js","three/addons/":"../lib/addons/"}}</script>
 </head>
 <body>
   <div class="hud" id="clock" hidden>
@@ -160,6 +175,7 @@
     </div>
   </div>
   <div class="hud" id="dialog" hidden></div>
+  <div class="hud" id="zone" aria-live="polite"></div>
   <div id="fade"></div>
   <script type="module" src="farm.js"></script>
 </body>
