@@ -71,6 +71,12 @@ const SFX = {
   ring: () => { tone({ f: 880, t: 0.1, v: 0.18, type: "sine" }); tone({ f: 1320, t: 0.25, v: 0.18, type: "sine", at: 0.06 }); },
   cluck: () => { tone({ f: 900, f2: 500, t: 0.07, type: "square", v: 0.12 }); tone({ f: 800, f2: 450, t: 0.07, type: "square", v: 0.12, at: 0.09 }); },
   moo: () => tone({ f: 140, f2: 110, t: 0.7, type: "sawtooth", v: 0.12 }),
+  baa: () => { tone({ f: 420, f2: 380, t: 0.18, type: "sawtooth", v: 0.08 }); tone({ f: 400, f2: 330, t: 0.32, type: "sawtooth", v: 0.08, at: 0.16 }); },
+  chop: () => { tone({ f: 190, f2: 120, t: 0.09, type: "square", v: 0.22 }); noise({ t: 0.09, v: 0.25, hp: 400, lp: 2400 }); },
+  crack: () => { noise({ t: 0.16, v: 0.32, hp: 1400, lp: 6000 }); tone({ f: 320, f2: 160, t: 0.08, type: "triangle", v: 0.25 }); },
+  plop: () => { tone({ f: 700, f2: 240, t: 0.12, type: "sine", v: 0.25 }); noise({ t: 0.12, v: 0.1, hp: 1500, lp: 5000, at: 0.02 }); },
+  bite: () => { tone({ f: 1046, t: 0.07, v: 0.2, type: "square" }); tone({ f: 1046, t: 0.07, v: 0.2, type: "square", at: 0.1 }); },
+  reel: () => { for (let i = 0; i < 6; i++) tone({ f: 600 + i * 70, t: 0.04, v: 0.1, type: "square", at: i * 0.045 }); },
 };
 function sfx(name) { if (THUMB) return; try { SFX[name] && SFX[name](); } catch {} }
 
