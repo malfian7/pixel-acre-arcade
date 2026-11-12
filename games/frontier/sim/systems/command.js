@@ -1,13 +1,16 @@
 // CommandSystem — the only door through which players (human or AI) change the world.
 
-import { DEFS, DEF_LIST, AGES, SHIPMENTS, BUILDABLE, C } from "../../data/defs.js";
+import { DEFS, DEF_LIST, AGES, BUILDABLE, C } from "../../data/defs.js";
+import { sendCard } from "../economy/shipments.js";
+import { startClaim } from "../treasures.js";
 import { CM, S } from "../ecs.js";
-
-const canAfford = (pl, cost) => cost.every((c, i) => pl.res[i] >= c);
-const pay = (pl, cost, k = 1) => cost.forEach((c, i) => (pl.res[i] -= c * k));
+import { canAfford, spend, refund, credit } from "../economy/ledger.js";
+import { beginAgeUp, cancelAgeUp } from "../economy/age.js";
 
 export function commandSystem(sim, cmds) {
   for (const c of cmds) {
+    // any new order cancels a pending "fight the guardians, then open the chest" plan
+    if (c.ids) for (const e of c.ids) sim.claimResume.delete(e);
     try { (H[c.t] || noop)(sim, c); } catch (err) { if (typeof console !== "undefined") console.warn("command failed", c.t, err); }
   }
 }
@@ -23,11 +26,11 @@ export function startGather(sim, e, t) {
   const res = d.res != null ? d.res : 0;
   if (st.carry[e] > 0 && st.ctype[e] !== res) st.carry[e] = 0;
   st.ctype[e] = res;
-  st.state[e] = S.GATHER; sim.st.setTarget(e, t);
+  st.state[e] = S.GATHER; st.eco[e] = 1; /* ECO.SEEK — see economy/villager-fsm.js */ sim.st.setTarget(e, t);
   st.lastNode[e] = t; st.lastNodeGen[e] = st.gen[t]; st.lastType[e] = GT.indexOf(d.farm ? "mill" : d.gtype);
   sim.moveToEntity(e, t, 0.5);
 }
-export const GT = ["berries", "hunt", "mill", "wood", "coin"];
+export const GT = ["berries", "hunt", "mill", "wood", "coin", "crate"];
 
 export function startBuild(sim, e, t) {
   const st = sim.st;
@@ -83,11 +86,14 @@ const H = {
     const st = sim.st, units = ownUnits(sim, c);
     if (!units.length) return;
     const pairs = units.length === 1 ? [[units[0], [c.x, c.z]]] : formation(sim, units, c.x, c.z);
+    const gid = (sim.orderSeq = (sim.orderSeq + 1) & 0xffff) || 1;
     for (const [e, [x, z]] of pairs) {
       st.state[e] = c.amove ? S.AMOVE : S.MOVE; st.amove[e] = c.amove ? 1 : 0;
-      st.tgt[e] = -1; st.tx[e] = x; st.tz[e] = z; st.gx[e] = x; st.gz[e] = z;
-      sim.moveToPoint(e, x, z);
+      st.tgt[e] = -1; st.tx[e] = x; st.tz[e] = z; st.gx[e] = x; st.gz[e] = z; st.group[e] = gid;
     }
+    // big groups share one flow field; small ones get individual A* paths
+    if (pairs.length >= 6) sim.moveGroupFlow(pairs, c.x, c.z);
+    else for (const [e, [x, z]] of pairs) sim.moveToPoint(e, x, z);
   },
   stop(sim, c) {
     const st = sim.st;
@@ -101,6 +107,8 @@ const H = {
     const movers = [];
     for (const e of units) {
       const d = DEF_LIST[st.def[e]], m = st.mask[e];
+      if (td.crate && to !== c.p) { movers.push(e); continue; }   // someone else's shipment crate
+      if (st.mask[t] & CM.TREASURE) { startClaim(sim, e, t); continue; } // walk to the chest and open it
       if (sim.enemies(c.p, to) && (m & CM.ATTACKER)) { startAttack(sim, e, t, 0); continue; }
       if (m & CM.GATHERER) {
         if ((st.mask[t] & CM.RESOURCE) && td.gtype) { startGather(sim, e, t); continue; }
@@ -120,8 +128,8 @@ const H = {
     if (!canAfford(pl, d.cost) || !sim.grid.canPlace(c.i, c.j, d.size)) return;
     const vills = ownUnits(sim, c).filter((e) => st.mask[e] & CM.GATHERER);
     if (!vills.length) return;
-    pay(pl, d.cost);
-    const b = sim.spawnBuilding(d.idx, c.p, c.i, c.j, false);
+    if (!spend(pl, d.cost)) return;
+    const b = sim.spawnBuilding(d.idx, c.p, c.i, c.j, false);   // a foundation: prog 0, ghost until built
     sim.events.push("placed", { e: b, p: c.p });
     for (const e of vills) startBuild(sim, e, b);
   },
@@ -130,11 +138,12 @@ const H = {
     if (!d || !st.alive[b] || st.owner[b] !== c.p || st.prog[b] < 1) return;
     const bd = DEF_LIST[st.def[b]];
     if (!bd.trains || !bd.trains.includes(c.def) || d.age > pl.age) return;
+    if (d.limit && limitLeft(sim, c.p, d) <= 0) return;
     let q = st.queue.get(b); if (!q) { q = { items: [], t: 0 }; st.queue.set(b, q); }
     const n = Math.max(1, c.n || 1);
     for (let k = 0; k < n; k++) {
-      if (q.items.length >= 5 || !canAfford(pl, d.cost)) break;
-      pay(pl, d.cost); q.items.push(d.idx);
+      if (q.items.length >= 5 || (d.limit && limitLeft(sim, c.p, d) <= 0) || !spend(pl, d.cost)) break;
+      q.items.push(d.idx);
     }
   },
   cancel(sim, c) {
@@ -143,32 +152,11 @@ const H = {
     const q = st.queue.get(b); if (!q || !q.items.length) return;
     const k = Math.min(q.items.length - 1, c.index ?? q.items.length - 1);
     const d = DEF_LIST[q.items[k]];
-    pay(pl, d.cost, -1); q.items.splice(k, 1); if (k === 0) q.t = 0;
+    refund(pl, d.cost); q.items.splice(k, 1); if (k === 0) q.t = 0;
   },
-  age(sim, c) {
-    const pl = sim.players[c.p];
-    if (pl.aging || pl.age >= AGES.length - 1 || pl.tc < 0 || pl.pendingShip) return;
-    const a = AGES[pl.age + 1];
-    if (!canAfford(pl, a.cost)) return;
-    pay(pl, a.cost);
-    pl.aging = { t: 0, total: a.time, to: pl.age + 1 };
-    sim.events.push("aging", { p: c.p });
-  },
-  ship(sim, c) {
-    const st = sim.st, pl = sim.players[c.p];
-    if (!pl.pendingShip) return;
-    const opt = SHIPMENTS[pl.pendingShip][c.choice ? 1 : 0];
-    pl.pendingShip = 0;
-    if (opt.res) opt.res.forEach((v, i) => (pl.res[i] += v));
-    if (opt.units && pl.tc >= 0 && st.alive[pl.tc]) {
-      const [k, n] = opt.units, d = DEFS[k];
-      for (let i = 0; i < n; i++) {
-        const pos = exitPoint(sim, pl.tc, i);
-        if (pos) { const e = sim.spawnUnit(d.idx, c.p, pos[0], pos[1]); st.rot[e] = st.prot[e] = c.p === 0 ? 2.4 : -0.7; }
-      }
-    }
-    sim.events.push("shipment", { p: c.p, name: opt.name });
-  },
+  age(sim, c) { beginAgeUp(sim, c.p); },
+  ageCancel(sim, c) { cancelAgeUp(sim, c.p); },
+  card(sim, c) { sendCard(sim, c.p, c.card); },
   rally(sim, c) {
     const st = sim.st;
     for (const b of c.ids || []) {
@@ -178,12 +166,26 @@ const H = {
   },
   delete(sim, c) {
     const st = sim.st;
-    for (const e of c.ids || []) if (st.alive[e] && st.owner[e] === c.p && (st.mask[e] & (CM.UNIT | CM.BUILDING))) st.hp[e] = 0;
+    for (const e of c.ids || []) {
+      if (!st.alive[e] || st.owner[e] !== c.p || !(st.mask[e] & (CM.UNIT | CM.BUILDING))) continue;
+      // cancelling an unfinished foundation returns the unbuilt share of its cost
+      if ((st.mask[e] & CM.BUILDING) && st.prog[e] < 1) refund(sim.players[c.p], DEF_LIST[st.def[e]].cost.map((v) => Math.floor(v * (1 - st.prog[e]))));
+      st.hp[e] = 0;
+    }
   },
   resign(sim, c) { sim.players[c.p].resigned = true; },
 };
 
 // A free spot just outside building b, preferring the rally point (or the map centre).
+/** How many more of a limited unit (Explorer: 1) the player may train: limit − alive − queued. */
+export function limitLeft(sim, p, d) {
+  const st = sim.st;
+  let n = 0;
+  for (let e = 0; e < st.top; e++) if (st.alive[e] && st.owner[e] === p && st.def[e] === d.idx) n++;
+  for (const [b, q] of st.queue) if (st.owner[b] === p) n += q.items.filter((i) => i === d.idx).length;
+  return d.limit - n;
+}
+
 export function exitPoint(sim, b, k = 0) {
   const st = sim.st, r = sim.tileRect(b), rl = st.rally.get(b);
   const tx = rl ? rl.x : 64, tz = rl ? rl.z : 64;

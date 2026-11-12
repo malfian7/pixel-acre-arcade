@@ -1,8 +1,10 @@
 // Frontier Crown — procedural WebAudio: muskets, cannon, steel, axes, picks, bells, horns, music.
-// Buses: music, world (positional-ish: gain + pan from distance to the camera focus), ui.
+// Buses: music (procedural fallback), track (the recorded soundtrack, audio/soundtrack.js),
+// world (positional-ish: gain + pan from distance to the camera focus), ui.
 
 let ac = null, master, bus = {}, noiseBuf = null, musicTimer = null, musicOn = false, paused = false;
 const vol = { master: 0.9, music: 0.5, sfx: 0.9 };
+const TRACK = 0.75, PAUSE_DUCK = 0.35; // soundtrack files are normalised to −19 LUFS
 
 export function audioInit() {
   if (ac) { if (ac.state === "suspended") ac.resume(); return; }
@@ -12,6 +14,9 @@ export function audioInit() {
   const comp = ac.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4;
   master.connect(comp); comp.connect(ac.destination);
   for (const k of ["music", "world", "ui"]) { bus[k] = ac.createGain(); bus[k].connect(master); }
+  // the soundtrack skips the SFX compressor (it is mastered already) but follows the master volume
+  bus.trackOut = ac.createGain(); bus.trackOut.gain.value = vol.master; bus.trackOut.connect(ac.destination);
+  bus.track = ac.createGain(); bus.track.gain.value = TRACK * vol.music; bus.track.connect(bus.trackOut);
   bus.music.gain.value = 0.22 * vol.music; bus.world.gain.value = 0.8 * vol.sfx; bus.ui.gain.value = 0.7 * vol.sfx;
   const len = ac.sampleRate * 1.5; noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
   const d = noiseBuf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
@@ -19,13 +24,15 @@ export function audioInit() {
 export function setVolumes(v) {
   Object.assign(vol, v);
   if (!ac) return;
-  master.gain.value = vol.master;
+  master.gain.value = vol.master; bus.trackOut.gain.value = vol.master;
+  bus.track.gain.value = TRACK * vol.music * (paused ? PAUSE_DUCK : 1);
   bus.music.gain.value = paused ? 0 : 0.22 * vol.music; bus.world.gain.value = paused ? 0 : 0.8 * vol.sfx; bus.ui.gain.value = 0.7 * vol.sfx;
 }
 export function audioPause(on) {
   paused = on; if (!ac) return;
   const t = ac.currentTime;
   bus.music.gain.setTargetAtTime(on ? 0 : 0.22 * vol.music, t, 0.08);
+  bus.track.gain.setTargetAtTime(TRACK * vol.music * (on ? PAUSE_DUCK : 1), t, 0.15); // pause menu: soundtrack ducks, keeps playing
   bus.world.gain.setTargetAtTime(on ? 0 : 0.8 * vol.sfx, t, 0.05);
 }
 
@@ -121,3 +128,5 @@ export function ambience() {
   }, 3800);
 }
 export function audioReady() { return !!ac; }
+export function audioContext() { return ac; }
+export function trackBus() { return bus.track || null; }

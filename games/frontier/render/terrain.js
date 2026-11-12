@@ -19,28 +19,4 @@ export function buildSky(THREE) {
   return new THREE.Mesh(g, m);
 }
 
-// Fog-of-war texture: 0..1 brightness per tile, eased toward the sim's visibility each frame.
-export class FogTexture {
-  constructor(THREE) {
-    this.data = new Uint8Array(W * H);
-    this.cur = new Float32Array(W * H).fill(0.1);
-    this.tex = new THREE.DataTexture(this.data, W, H, THREE.RedFormat, THREE.UnsignedByteType);
-    this.tex.magFilter = THREE.LinearFilter; this.tex.minFilter = THREE.LinearFilter;
-    this.tex.needsUpdate = true;
-    this.reveal = false;
-  }
-  update(grid, p, dt) {
-    const vis = grid.vis[p], exp = grid.exp[p], cur = this.cur, data = this.data;
-    const k = Math.min(1, dt * 6);
-    let changed = false;
-    for (let i = 0; i < cur.length; i++) {
-      const t = this.reveal ? 1 : vis[i] ? 1 : exp[i] ? 0.56 : 0.12;
-      const c = cur[i];
-      if (c !== t) {
-        let n = c + (t - c) * k; if (Math.abs(n - t) < 0.01) n = t;
-        cur[i] = n; data[i] = n * 255; changed = true;
-      }
-    }
-    if (changed) this.tex.needsUpdate = true;
-  }
-}
+// (Fog of war lives in render/fog-canvas.js.)

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frontier Crown — unit model viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1d1f1a; color: #eadfc8; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #ui { position: fixed; left: 12px; top: 12px; display: flex; gap: 6px; flex-wrap: wrap; max-width: 70vw; }
+  button { background: #3a3224; color: #eadfc8; border: 1px solid #6b5a3a; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { background: #4b4030; }
+  #info { position: fixed; left: 12px; bottom: 12px; white-space: pre; font: 12px/1.35 ui-monospace, monospace; opacity: .9; }
+</style>
+<script type="importmap">{"imports":{"three":"../../../lib/three.module.min.js","three/addons/":"../../../lib/addons/"}}</script>
+</head><body>
+<div id="ui"></div><div id="info"></div>
+<script type="module">
+// Dev tool: one AssetManager, many SkeletonUtils clones of the same .glb, each with its own UnitAnimator.
+// Click a state to send it to every unit, or "Stagger" to give each clone a different state.
+import * as THREE from "three";
+import { AssetManager, UNIT_MODELS } from "../render/assets.js";
+import { UnitAnimator, STATE } from "../render/unit-animator.js";
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xcfe0ea);
+const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 3.2, 9.5); camera.lookAt(0, 0.7, 0);
+scene.add(new THREE.HemisphereLight(0xdbe8ff, 0x5d4c34, 1.4));
+const sun = new THREE.DirectionalLight(0xfff0d6, 2.4); sun.position.set(-4, 8, 6); sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8 }); scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x7c9a55 }));
+ground.receiveShadow = true; scene.add(ground);
+
+const assets = new AssetManager();
+await assets.preload(UNIT_MODELS);
+const TEAM = [0x2f6fd6, 0xc8342d];
+const units = [];
+const order = Object.keys(UNIT_MODELS);
+for (let i = 0; i < 8; i++) {
+  const id = order[i % order.length], team = Math.floor(i / 4) % 2;
+  const root = assets.instantiate(id);                         // independent skeleton per clone
+  root.traverse((o) => { if (o.isMesh && o.material.name === "Team") { o.material = o.material.clone(); o.material.color.set(TEAM[team]); } });
+  root.position.set((i - 3.5) * 1.15, 0, i % 2 ? -0.6 : 0.4);
+  scene.add(root);
+  const anim = new UnitAnimator(root, assets.clips(id), { walkSpeed: 1.4 });
+  anim.setState(STATE.IDLE, { now: true });
+  units.push({ id, root, anim });
+}
+const states = Object.values(STATE);
+const ui = document.getElementById("ui");
+const btn = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.onclick = fn; ui.appendChild(b); };
+for (const s of states) btn(s, () => units.forEach((u) => { if (u.anim.dead) u.anim.reset(); u.anim.setState(s, { now: true }); }));
+btn("Stagger", () => units.forEach((u, i) => { if (u.anim.dead) u.anim.reset(); u.anim.setState(states[i % 4], { now: true }); }));
+btn("Fire!", () => units.forEach((u) => u.anim.state === STATE.ATTACK && u.anim.restart(0)));
+window.__viewer = { assets, units, STATE };
+
+const info = document.getElementById("info"), clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(0.05, clock.getDelta());
+  for (const u of units) u.anim.update(dt);
+  renderer.render(scene, camera);
+  info.textContent = units.map((u, i) => `${i} ${u.id.padEnd(9)} ${String(u.anim.state).padEnd(6)} ${JSON.stringify(u.anim.weights())}`).join("\n") + `\nrequests ${assets.stats.requests}  clones ${assets.stats.clones}  draw calls ${renderer.info.render.calls}`;
+});
+addEventListener("resize", () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+</script>
+</body></html>

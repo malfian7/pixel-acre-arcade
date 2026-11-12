@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Alegreya+Sans:wght@400;500;700;800&display=swap">
 <link rel="stylesheet" href="common.css">
-<script type="importmap">{"imports":{"three":"../lib/three.module.min.js"}}</script>
+<script type="importmap">{"imports":{"three":"../lib/three.module.min.js","three/addons/":"../lib/addons/","cannon-es":"../lib/cannon-es.min.js"}}</script>
 <style>
   :root {
     --wood: #241811; --wood2: #33231a; --wood3: #4a3324; --brass: #c9a04a; --brass2: #f0cf7a; --parch: #efe3c4; --ink: #f6ecd6; --dim: #b9a888;
@@ -45,6 +45,10 @@
   .res { display: flex; align-items: center; gap: 6px; min-width: 86px; height: 30px; padding: 0 10px 0 6px; border-radius: 15px; background: rgba(0,0,0,.28); border: 1px solid rgba(240,207,122,.18); font: 800 17px/1 var(--ui); font-variant-numeric: tabular-nums; }
   .res svg { width: 22px; height: 22px; }
   .res.capped b { color: var(--red); }
+  .res .rate { font: 700 11px/1 var(--ui); font-style: normal; color: #b9d98a; opacity: .85; min-width: 34px; }
+  .res .rate:empty { display: none; }
+  .res.spent b { animation: spent .6s ease-out; }
+  @keyframes spent { 0% { color: #ff8a6a; transform: translateY(2px); } 100% { color: inherit; transform: none; } }
   #ageBox { margin: 0 auto; display: grid; justify-items: center; gap: 3px; cursor: pointer; min-width: 180px; }
   #ageName { font: 700 15px/1 var(--hd); letter-spacing: .06em; color: var(--brass2); }
   .ageTrack { width: 160px; height: 4px; background: rgba(255,255,255,.08); border-radius: 2px; overflow: hidden; opacity: 0; transition: opacity .3s; }
@@ -103,6 +107,10 @@
   .cb.off { filter: grayscale(1) brightness(.55); }
   .cb.poor .ic { opacity: .5; }
   .cb.poor::after { content: ""; position: absolute; inset: 0; border-radius: 5px; box-shadow: inset 0 0 0 2px rgba(224,83,63,.55); }
+  .cb.locked .ic { opacity: .35; }
+  .cb.locked::after { content: ""; position: absolute; right: 4px; top: 4px; width: 14px; height: 14px; background: no-repeat center/contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 11V8a5 5 0 0110 0v3' fill='none' stroke='%23f0cf7a' stroke-width='2.4'/%3E%3Crect x='5' y='11' width='14' height='10' rx='2' fill='%23f0cf7a'/%3E%3C/svg%3E"); }
+  .cb.new::before { content: "NEW"; position: absolute; left: -4px; top: -6px; padding: 2px 4px; border-radius: 4px; background: #e9b93a; color: #2a1c0c; font: 900 9px/1 var(--ui); letter-spacing: .04em; box-shadow: 0 1px 3px rgba(0,0,0,.5); animation: newpulse 1.2s ease-in-out infinite alternate; }
+  @keyframes newpulse { to { transform: scale(1.12); } }
   .cb.armed { border-color: var(--brass2); box-shadow: 0 0 0 2px var(--brass2), 0 0 12px rgba(240,207,122,.6); }
   #tip { position: fixed; z-index: 30; width: 260px; padding: 10px 12px; border-radius: 6px; pointer-events: none; background: rgba(28,19,13,.97); border: 1px solid #8a6a3a; box-shadow: 0 8px 22px rgba(0,0,0,.5); font: 500 14px/1.35 var(--ui); color: var(--parch); }
   #tip b { font: 700 15px/1.2 var(--hd); color: var(--brass2); }
@@ -120,7 +128,37 @@
   #idleBtn.on { display: flex; animation: idleP 1.6s ease-in-out infinite; }
   #idleBtn svg { width: 26px; height: 26px; }
   @keyframes idleP { 50% { box-shadow: 0 0 0 3px rgba(240,207,122,.35), 0 3px 10px rgba(0,0,0,.4); } }
+  #shipBtn { display: flex; align-items: center; gap: 6px; padding: 0 8px 0 6px; }
+  #shipIc svg { width: 20px; height: 20px; display: block; }
+  .xpTrack { width: 70px; height: 6px; border-radius: 3px; background: rgba(0,0,0,.45); overflow: hidden; box-shadow: inset 0 0 0 1px rgba(240,207,122,.25); }
+  #xpFill { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #5d9cf0, #b8e0ff); transition: width .25s; }
+  #shipN { min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: #2a1d14; color: var(--dim); font: 800 12px/18px var(--ui); text-align: center; }
+  #shipT { font: 700 12px/1 var(--ui); color: #b8e0ff; font-variant-numeric: tabular-nums; } #shipT:empty { display: none; }
+  #shipBtn.has { border-color: var(--brass2); animation: shipGlow 1.3s ease-in-out infinite alternate; }
+  #shipBtn.has #shipN { background: #e9b93a; color: #2a1c0c; }
+  @keyframes shipGlow { from { box-shadow: 0 0 0 1px rgba(240,207,122,.4); } to { box-shadow: 0 0 0 1px var(--brass2), 0 0 14px rgba(240,207,122,.7); } }
   #shipPanel { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); width: min(560px, calc(100vw - 24px)); padding: 12px 14px; text-align: center; animation: noteIn .3s; }
+  #shipPanel.deck { width: min(780px, calc(100vw - 24px)); text-align: left; }
+  .deckHead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .deckHead h3 { margin: 0 !important; }
+  .deckHead .xpline { color: var(--dim); font: 600 13px var(--ui); }
+  .deckHead .xpline b { color: #b8e0ff; }
+  #shipPanel .close { display: block; padding: 0; margin-left: auto; appearance: none; width: 30px; height: 30px; border-radius: 4px; border: 1px solid #8a6a3a; background: #3a281b; color: var(--ink); font: 700 16px/1 var(--ui); cursor: pointer; }
+  .sailbar { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin: 0 0 8px; padding: 6px 8px; border-radius: 5px; background: rgba(93,156,240,.12); border: 1px solid rgba(143,199,255,.35); font: 600 13px var(--ui); color: #d8ecff; }
+  .sailbar .trk { height: 6px; border-radius: 3px; background: rgba(0,0,0,.4); overflow: hidden; } .sailbar .trk i { display: block; height: 100%; background: linear-gradient(90deg, #5d9cf0, #b8e0ff); }
+  .deckGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 8px; max-height: min(54vh, 430px); overflow: auto; padding: 4px; }
+  #shipPanel .scard { position: relative; display: grid; grid-template-rows: auto auto 1fr auto; gap: 3px; padding: 8px 8px 7px; min-height: 132px; border-radius: 6px; text-align: left; transition: transform .12s, border-color .12s; }
+  .scard .ic svg { width: 34px; height: 34px; display: block; }
+  .scard .age { position: absolute; right: 8px; top: 6px; font: 800 12px var(--hd); color: var(--brass); }
+  #shipPanel .scard b { font: 700 14px/1.1 var(--hd); color: var(--brass2); }
+  .scard p { margin: 0 !important; font: 500 11.5px/1.3 var(--ui) !important; color: var(--parch) !important; opacity: .85; }
+  .scard .meta { display: flex; gap: 7px; font: 700 11px var(--ui); color: var(--dim); white-space: nowrap; }
+  #shipPanel .scard.ready:hover { transform: translateY(-2px); border-color: var(--brass2); }
+  .scard.nopoint { opacity: .78; }
+  .scard.locked, .scard.spent { filter: grayscale(1) brightness(.6); cursor: default; }
+  #shipPanel .scard.spent b { text-decoration: line-through; }
+  .scard.cooldown::after { content: attr(data-cd); position: absolute; inset: 0; display: grid; place-items: center; border-radius: 6px; background: conic-gradient(rgba(0,0,0,.7) var(--cd), rgba(0,0,0,.25) 0); font: 800 22px var(--ui); color: #fff; }
+  #shipPanel .scard.sailing { border-color: #8fc7ff; box-shadow: 0 0 0 1px #8fc7ff, 0 0 14px rgba(143,199,255,.5); }
   #shipPanel h3 { margin: 0; display: flex; gap: 8px; align-items: center; justify-content: center; font: 700 17px/1.2 var(--hd); color: var(--brass2); }
   #shipPanel h3 svg { width: 24px; height: 24px; }
   #shipPanel p { margin: 4px 0 10px; color: var(--dim); font: 500 14px var(--ui); }
@@ -155,6 +193,14 @@
   .foot { margin: 6px 0 0; font: 500 14px var(--ui); color: var(--dim); text-shadow: 0 1px 4px #000; }
   .card { width: min(480px, 94vw); padding: 22px 24px; display: grid; gap: 10px; background: linear-gradient(180deg, #33231a, #241811); border: 2px solid #7a5a32; border-radius: 8px; box-shadow: inset 0 0 0 1px rgba(240,207,122,.2), 0 18px 50px rgba(0,0,0,.55); }
   .card.wide { width: min(860px, 94vw); }
+  .scard { appearance: none; position: relative; display: grid; grid-template-rows: auto auto 1fr auto; gap: 3px; padding: 8px 8px 7px; min-height: 132px; border-radius: 6px; text-align: left; cursor: pointer; border: 1px solid #8a6a3a; background: linear-gradient(180deg, #4a3324, #2a1d14); color: var(--ink); font: inherit; }
+  .scard b { font: 700 14px/1.1 var(--hd); color: var(--brass2); }
+  .deckEd .deckGrid { max-height: min(56vh, 520px); padding: 8px; }
+  .deckEd .scard.out { opacity: .6; } .deckEd .scard.out:hover { opacity: .9; }
+  .deckEd .scard.in { border-color: var(--brass2); box-shadow: 0 0 0 1px var(--brass2), 0 0 12px rgba(240,207,122,.35); }
+  .deckEd .scard.in::before { content: "✓"; position: absolute; left: -6px; top: -6px; width: 20px; height: 20px; border-radius: 50%; background: #e9b93a; color: #2a1c0c; font: 900 13px/20px var(--ui); text-align: center; }
+  .deckCount { font: 700 14px var(--ui); color: var(--dim); } .deckCount b { color: var(--brass2); } .deckCount.bad b { color: var(--red); }
+  .deckEd .mi[disabled] { opacity: .45; cursor: not-allowed; }
   .card h2 { margin: 0; font: 800 30px/1.1 var(--hd); color: var(--brass2); }
   .card h3 { margin: 10px 0 4px; font: 700 16px/1.2 var(--hd); color: var(--brass2); }
   .card p, .card li { font: 500 15.5px/1.45 var(--ui); color: var(--parch); margin: 0; }
@@ -184,7 +230,7 @@
     #bottom { padding-top: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom)); gap: 6px; }
     #touchBar .tbtn { height: 34px; padding: 0 10px; font-size: 13px; }
     #topbar { height: 36px; gap: 5px; } .res { min-width: 0; height: 26px; padding: 0 8px 0 4px; font-size: 15px; } .res svg { width: 18px; height: 18px; }
-    #ageBox { min-width: 0; } #ageName { font-size: 12px; } .ageTrack { width: 110px; }
+    #ageBox { min-width: 0; } #ageName { font-size: 12px; } .ageTrack { width: 110px; } .xpTrack { width: 36px; } #shipBtn { height: 26px; }
     .portrait { width: 52px; height: 52px; } .portrait svg { width: 40px; height: 40px; }
     .nm { font-size: 15px; } .stat { font-size: 12.5px; } .hp { height: 14px; } .hp span { line-height: 14px; font-size: 11px; }
     #selPanel { padding: 6px 8px; } .many .mi { width: 32px; height: 32px; }
@@ -195,6 +241,7 @@
     .logo { font-size: 46px; } .tagline { font-size: 15px; } .mi { min-height: 40px; } .mi.big { min-height: 44px; }
   }
   @media (max-width: 700px) { #clock { display: none; } .res { font-size: 14px; } }
+  @media (max-width: 1000px) { .res .rate { display: none; } }
   @media (max-height: 460px) {
     #menu { align-items: safe center; }
     .title { gap: 8px; } .title .crest, .tagline, .foot { display: none; }
@@ -202,7 +249,7 @@
     .card { gap: 6px; padding: 12px 14px; } .card h2 { font-size: 20px; } .seg { min-height: 34px; } .result.win h2, .result.lose h2 { font-size: 30px; }
     .stats th, .stats td { padding: 3px 8px; font-size: 13px; }
   }
-  @media (prefers-reduced-motion: reduce) { #idleBtn.on, .note { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { #idleBtn.on, .note, .cb.new::before, .res.spent b, #shipBtn.has { animation: none; } }
 </style>
 </head><body>
 <div id="loading">
@@ -223,10 +270,11 @@
 
 <div id="hud" class="off">
   <div id="topbar">
-    <div class="res" title="Food"><span id="rIconFood"></span><b id="rFood">0</b></div>
-    <div class="res" title="Wood"><span id="rIconWood"></span><b id="rWood">0</b></div>
-    <div class="res" title="Coin"><span id="rIconCoin"></span><b id="rCoin">0</b></div>
+    <div class="res" title="Food — stockpile and income per minute"><span id="rIconFood"></span><b id="rFood">0</b><i class="rate" id="rateFood"></i></div>
+    <div class="res" title="Wood — stockpile and income per minute"><span id="rIconWood"></span><b id="rWood">0</b><i class="rate" id="rateWood"></i></div>
+    <div class="res" title="Coin — stockpile and income per minute"><span id="rIconCoin"></span><b id="rCoin">0</b><i class="rate" id="rateCoin"></i></div>
     <div class="res" title="Population"><span id="rIconPop"></span><b id="rPop">0/0</b></div>
+    <button id="shipBtn" class="tbtn" title="Crown Shipments (O)" aria-label="Crown Shipments"><span id="shipIc"></span><span class="xpTrack"><i id="xpFill"></i></span><b id="shipN">0</b><span id="shipT"></span></button>
     <div id="ageBox" title="Select your Town Center (H)"><span id="ageName">Discovery Age</span><span class="ageTrack"><i id="ageBar"></i></span></div>
     <div id="clock">00:00</div>
     <button class="tbtn" id="btnSpeed" title="Game speed">1×</button>

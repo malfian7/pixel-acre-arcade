@@ -1,4 +1,4 @@
-// ProductionSystem — training queues, Age advancement.
+// ProductionSystem — training queues (Age advancement: economy/age.js).
 
 import { TICK } from "../../core/core.js";
 import { DEF_LIST } from "../../data/defs.js";
@@ -25,15 +25,7 @@ export function productionSystem(sim) {
       applyRally(sim, b, e);
     }
   }
-  for (const pl of sim.players) {
-    if (!pl.aging) continue;
-    if (pl.tc < 0 || !st.alive[pl.tc]) { pl.aging = null; continue; }
-    pl.aging.t += TICK;
-    if (pl.aging.t >= pl.aging.total) {
-      pl.age = pl.aging.to; pl.aging = null; pl.pendingShip = pl.age;
-      sim.events.push("age", { p: pl.id, age: pl.age });
-    }
-  }
+  // Age research timers live in economy/age.js (ageSystem).
 }
 
 function applyRally(sim, b, e) {

@@ -11,7 +11,8 @@ export function deathSystem(sim) {
     if (st.mask[e] & CM.RESOURCE) continue; // animals are "killed" via the dead flag
     const d = DEF_LIST[st.def[e]], o = st.owner[e];
     const k = st.lastAttacker[e], ko = k >= 0 && st.alive[k] ? st.owner[k] : -1;
-    sim.events.push("died", { e, def: st.def[e], owner: o, x: st.x[e], z: st.z[e], rot: st.rot[e], building: d.kind === "building", prog: st.prog[e] });
+    sim.events.push("died", { e, def: st.def[e], owner: o, x: st.x[e], z: st.z[e], rot: st.rot[e], building: d.kind === "building", prog: st.prog[e], by: ko,
+      blast: sim.time - st.blastT[e] < 0.25 ? { x: st.bx[e], z: st.bz[e] } : null }); // the view throws blast victims as ragdolls
     if (o < 2) {
       const pl = sim.players[o];
       if (d.kind === "unit") pl.stats.lost++;

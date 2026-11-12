@@ -5,6 +5,7 @@
 //   const tex = createGroundTextures(THREE);
 //   const { material, uniforms } = createTerrainMaterial(THREE, { textures: tex, tint, fogTex, buildTex, mapSize: 128 });
 //   uniforms.uGrid.value = 1; uniforms.uCursor.value.set(x, z); uniforms.uFoot.value.set(x0, z0, x1, z1);
+import { FOG_GLSL } from "../render/fog-canvas.js";
 
 function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 
@@ -101,6 +102,7 @@ varying vec4 vSplat; varying vec3 vWP; varying vec3 vWN;`)
     sh.fragmentShader = sh.fragmentShader
       .replace("#include <common>", `#include <common>
 uniform sampler2D tGrass, tDirt, tSand, tRock, tTint, uFog, uBuild;
+${FOG_GLSL}
 uniform float uMap, uGrid, uRadius, uFootOk, uTime;
 uniform vec2 uCursor; uniform vec4 uFoot;
 varying vec4 vSplat; varying vec3 vWP; varying vec3 vWN;
@@ -142,7 +144,7 @@ vec3 rockTex() {
     if ( inFoot ) { gc = uFootOk > 0.5 ? vec3( 0.45, 1.0, 0.55 ) : vec3( 1.0, 0.25, 0.2 ); a = max( a, ( 0.42 + line * 0.4 ) * uGrid ); }
     gl_FragColor.rgb = mix( gl_FragColor.rgb, gc, a );
   }
-  gl_FragColor.rgb *= texture2D( uFog, vWP.xz / uMap ).r;`);
+  gl_FragColor.rgb = fcFog( gl_FragColor.rgb, texture2D( uFog, vWP.xz / uMap ).r );`);
   };
   if (triplanar) material.defines = { TRIPLANAR: "" };
   material.customProgramCacheKey = () => "fc-terrain" + (triplanar ? "-tri" : "");

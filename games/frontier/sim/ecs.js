@@ -8,11 +8,11 @@ export const MAX = 8192;
 // Component bits
 export const CM = {
   UNIT: 1, BUILDING: 2, RESOURCE: 4, MOVER: 8, HEALTH: 16, ATTACKER: 32, GATHERER: 64,
-  PRODUCER: 128, DROPSITE: 256, FOOTPRINT: 512, VISION: 1024,
+  PRODUCER: 128, DROPSITE: 256, FOOTPRINT: 512, VISION: 1024, TREASURE: 2048,
 };
 
 // Unit order states
-export const S = { IDLE: 0, MOVE: 1, GATHER: 2, RETURN: 3, BUILD: 4, ATTACK: 5, AMOVE: 6 };
+export const S = { IDLE: 0, MOVE: 1, GATHER: 2, RETURN: 3, BUILD: 4, ATTACK: 5, AMOVE: 6, CLAIM: 7 };
 
 export class Store {
   constructor() {
@@ -35,10 +35,12 @@ export class Store {
     this.scan = new Uint8Array(MAX);       // ticks until next target scan
     this.repath = new Uint8Array(MAX);     // ticks until a chase path refresh
     // movement
-    this.vx = new Float32Array(MAX); this.vz = new Float32Array(MAX);
+    this.vx = new Float32Array(MAX); this.vz = new Float32Array(MAX);     // actual velocity last tick (animation, others' avoidance)
+    this.svx = new Float32Array(MAX); this.svz = new Float32Array(MAX);   // steering velocity (persists, acceleration-limited)
     this.moving = new Uint8Array(MAX);
     this.stuck = new Uint16Array(MAX);
     this.tries = new Uint8Array(MAX);      // failed approach attempts
+    this.group = new Uint16Array(MAX);     // move-order id shared by units ordered together (flocking)
     // economy
     this.carry = new Float32Array(MAX); this.ctype = new Uint8Array(MAX);
     this.lastNode = new Int32Array(MAX).fill(-1); this.lastNodeGen = new Uint16Array(MAX);
@@ -48,6 +50,13 @@ export class Store {
     this.prog = new Float32Array(MAX);     // construction progress 0..1
     this.workers = new Uint8Array(MAX);    // gatherers on a node this tick
     this.unreach = new Uint8Array(MAX);    // bit per player: node proved unreachable
+    this.eco = new Uint8Array(MAX);        // villager economy sub-state (economy/villager-fsm.js ECO)
+    this.pulse = new Float32Array(MAX);    // harvest / unload timer (s)
+    // physics
+    this.kx = new Float32Array(MAX); this.kz = new Float32Array(MAX);      // knockback velocity (tiles/s)
+    this.knockT = new Float32Array(MAX);   // seconds of knockback left (unit is not steering)
+    this.bx = new Float32Array(MAX); this.bz = new Float32Array(MAX);      // last blast centre that hit this entity
+    this.blastT = new Float32Array(MAX).fill(-99); // sim time of that blast
     // view hints (not gameplay)
     this.act = new Float32Array(MAX);      // attack/gather animation pulse
     this.hitT = new Float32Array(MAX);     // time since last damage
@@ -80,15 +89,17 @@ export class Store {
       if (d.atk) m |= CM.ATTACKER;
       if (d.trains) m |= CM.PRODUCER;
       if (d.drop) m |= CM.DROPSITE;
+    } else if (d.kind === "treasure") {
+      m |= CM.TREASURE | CM.FOOTPRINT;
     } else {
       m |= CM.RESOURCE | CM.FOOTPRINT;
     }
     this.mask[e] = m;
     this.hp[e] = this.maxHp[e] = d.hp || 1;
     this.state[e] = 0; this.tgt[e] = -1; this.amove[e] = 0; this.cd[e] = 0; this.scan[e] = e % 10; this.repath[e] = 0;
-    this.vx[e] = this.vz[e] = 0; this.moving[e] = 0; this.stuck[e] = 0; this.tries[e] = 0;
+    this.vx[e] = this.vz[e] = 0; this.svx[e] = this.svz[e] = 0; this.moving[e] = 0; this.stuck[e] = 0; this.tries[e] = 0; this.group[e] = 0;
     this.carry[e] = 0; this.ctype[e] = 0; this.lastNode[e] = -1; this.amount[e] = d.amount || 0; this.dead[e] = 0;
-    this.prog[e] = 1; this.workers[e] = 0; this.unreach[e] = 0; this.act[e] = 0; this.hitT[e] = 99; this.lastAttacker[e] = -1;
+    this.prog[e] = 1; this.workers[e] = 0; this.unreach[e] = 0; this.eco[e] = 0; this.pulse[e] = 0; this.kx[e] = this.kz[e] = 0; this.knockT[e] = 0; this.blastT[e] = -99; this.act[e] = 0; this.hitT[e] = 99; this.lastAttacker[e] = -1;
     this.gx[e] = x; this.gz[e] = z; this.tx[e] = x; this.tz[e] = z;
     this.count++;
     return e;

@@ -11,10 +11,15 @@ import { pathStats } from "./sim/path.js";
 import { MAPS } from "./sim/mapgen.js";
 import { Heightmap } from "./terrain/heightmap.js";
 import { View } from "./render/view.js";
+import { assets, UNIT_MODELS } from "./render/assets.js";
 import { Controller } from "./input/input.js";
 import { HUD } from "./ui/hud.js";
 import { ICON } from "./ui/icons.js";
+import { CARDS_JSON, CARDS, DECK_SIZE } from "./data/cards.js";
+import { validateDeck } from "./sim/economy/shipments.js";
 import * as A from "./audio/audio.js";
+import { Soundtrack } from "./audio/soundtrack.js";
+const OST = new Soundtrack(); // menu / exploration / ages / war / victory music (audio/soundtrack.js)
 
 const ARCADE = !window.CC_STANDALONE;
 const Q = PA.params, THUMB = PA.THUMB, AUTO = Q.has("auto"), PROF = Q.has("prof");
@@ -22,7 +27,9 @@ const TOUCH = PA.TOUCH;
 const $ = (id) => document.getElementById(id);
 if (TOUCH) document.body.classList.add("touch");
 
-const settings = Object.assign({ quality: "high", music: 0.5, sfx: 0.9, edge: true }, PA.store.get("fc:settings", {}));
+const settings = Object.assign({ quality: "high", music: 0.5, sfx: 0.9, edge: 1, camKeys: "arrows" }, PA.store.get("fc:settings", {}));
+settings.edge = settings.edge ? 1 : 0;
+const camSettings = () => ({ edge: !!settings.edge, wasd: settings.camKeys === "wasd" });
 const records = Object.assign({ wins: [0, 0, 0], losses: [0, 0, 0], best: [null, null, null] }, PA.store.get("fc:records", {}));
 const saveSettings = () => PA.store.set("fc:settings", settings);
 
@@ -38,6 +45,13 @@ async function boot() {
   renderer = await PA.renderer(THREE, { clear: 0xcfe0ea, shadows: true });
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   applyQuality();
+  // rigged soldier models (.glb): fetched + parsed once, cached for every match (render/assets.js)
+  if (Q.get("glb") !== "0") {
+    await stage(0.12, "Drilling the regiments");
+    const t0 = performance.now();
+    const r = await assets.preload(UNIT_MODELS, (p) => { L.bar.style.transform = `scaleX(${0.12 + p * 0.12})`; L.pct.textContent = Math.round((0.12 + p * 0.12) * 100) + "%"; });
+    window.__fcAssets = { assets, ...r, ms: Math.round(performance.now() - t0) };
+  }
   await stage(0.25, "Surveying the frontier");
   await newWorld({ seed: THUMB ? 7 : 1000 + Math.floor(Math.random() * 9000), difficulty: 1, attract: true });
   await stage(0.7, "Raising the Town Centers");
@@ -81,17 +95,18 @@ async function newWorld({ seed, difficulty = 1, attract: att = false, map = "for
   const heights = await loadHeights(map); // load before tearing down the current world
   if (view) { view.dispose(); }
   attract = att;
-  sim = new Sim({ seed: seed || 1000 + Math.floor(Math.random() * 9000), difficulty, map, heights });
+  sim = new Sim({ seed: seed || 1000 + Math.floor(Math.random() * 9000), difficulty, map, heights, decks: [validateDeck(PA.store.get("fc:deck", null)), null] });
   sim.ais.push(new AIPlayer(sim, 1, difficulty));
   if (att || AUTO) sim.ais.push(new AIPlayer(sim, 0, att ? 1 : difficulty));
-  view = new View(renderer, sim, { me: 0, quality: settings.quality });
+  view = new View(renderer, sim, { me: 0, quality: settings.quality, assets, actorBudget: Q.has("actors") ? +Q.get("actors") : undefined });
+  view.cam.configure(camSettings());
   if (att) { view.fog.reveal = true; view.cam.goalDist = view.cam.dist = 30; view.cam.focus(26, 104); }
   if (ctl) ctl.dispose();
   if (hud) hud.dispose();
   ctl = new Controller({ sim, view, me: 0, sfx: A.sfx, canvas: renderer.domElement, touch: TOUCH });
   ctl.enabled = !att;
   hud = new HUD({ sim, view, ctl, me: 0, sfx: A.sfx, touch: TOUCH, onMenu: () => pauseMenu(), onSpeed: cycleSpeed });
-  window.__fc = { THREE, sim, view, ctl, hud, records, settings, pathStats, startMatch, titleMenu, pauseMenu, resume, get loop() { return loop; }, DEF_LIST, CM };
+  window.__fc = { OST, assets, THREE, sim, view, ctl, hud, records, settings, pathStats, startMatch, titleMenu, pauseMenu, resume, get loop() { return loop; }, DEF_LIST, CM };
 }
 
 function cycleSpeed() { speedIdx = (speedIdx + 1) % speeds.length; if (loop) loop.speed = speeds[speedIdx]; $("btnSpeed").textContent = speeds[speedIdx] + "×"; A.sfx("click", { ui: true }); }
@@ -115,15 +130,17 @@ function step() {
 function render(alpha, dt) {
   if (!view) return;
   const wdt = paused ? 0 : dt;
-  if (attract) { view.cam.tx += dt * 0.55; view.cam.tz -= dt * 0.5; if (view.cam.tz < 30) view.cam.focus(26, 104); }
+  if (attract) { view.cam.tx += dt * 0.55; view.cam.tz -= dt * 0.5; if (view.cam.tz < 30 || view.cam.clamped.x || view.cam.clamped.z) view.cam.focus(26, 104); }
   if (ctl && !paused) ctl.update(dt);
   if (ctl) ctl.pruneSel();
   view.render(paused ? 1 : alpha, wdt);
   if (hud && !attract) hud.update(dt);
+  if (aiDebugEl && !aiDebugEl.hidden && (aiDebugT += dt) > 0.4) { aiDebugT = 0; const bot = sim.ais.find((a) => a.p === 1); aiDebugEl.textContent = bot ? bot.debug() : ""; }
   if (!THUMB) dynRes(dt);
 }
 
 function audioEvents(list) {
+  OST.events(list, sim, 0);
   const cam = view.cam, now = performance.now();
   for (const ev of list) {
     const x = ev.x ?? (ev.e >= 0 ? sim.st.x[ev.e] : cam.tx), z = ev.z ?? (ev.e >= 0 ? sim.st.z[ev.e] : cam.tz);
@@ -135,17 +152,23 @@ function audioEvents(list) {
         if (ev.kind === "ranged") { if (now - lastMusket > 45) { lastMusket = now; A.sfx("musket", { ...o, gain: 0.8 }); } }
         else if (ev.kind === "hunt") A.sfx("pop", o);
         else if (ev.kind === "cannon") A.sfx("cannon", o);
+        else if (ev.kind === "grenade") A.sfx("thud", { ...o, gain: 0.45 });
         else if (ev.kind === "melee") A.sfx(Math.random() < 0.55 ? "clash" : "thud", { ...o, gain: 0.7 });
         break;
-      case "explode": if (view.seen(ev.x, ev.z)) A.sfx("boom", o); break;
+      case "explode": if (view.seen(ev.x, ev.z)) A.sfx("boom", ev.small ? { ...o, gain: 0.5 } : o); break;
+      case "agecancel": if (ev.p === 0) A.sfx("click", { ui: true }); break;
       case "died": if (ev.building) A.sfx("collapse", o); else if (Math.random() < 0.5 && view.seen(ev.x, ev.z)) A.sfx("die", o); break;
       case "work": if (view.seen(ev.x, ev.z) && Math.random() < 0.7) A.sfx({ wood: "chop", coin: "pick", berries: "forage", mill: "forage", hunt: "forage", build: "hammer" }[ev.gt] || "forage", { ...o, gain: 0.6 }); break;
       case "built": if (ev.p === 0) A.sfx("built", { ui: true }); break;
       case "trained": if (ev.p === 0) A.sfx("bell", { ui: true, gain: DEF_LIST[sim.st.def[ev.e]].id === "villager" ? 0.35 : 0.6 }); break;
-      case "age": if (ev.p === 0) A.sfx("fanfare", { ui: true }); else A.sfx("horn", { ui: true, gain: 0.5 }); break;
+      case "age": if (ev.p === 0) { A.sfx("fanfare", { ui: true }); OST.ageReached(); } else A.sfx("horn", { ui: true, gain: 0.5 }); break;
       case "aging": if (ev.p === 0) A.sfx("select", { ui: true }); break;
       case "attacked": if (ev.p === 0) A.sfx("horn", { ui: true, gain: 0.7 }); break;
-      case "shipment": if (ev.p === 0) A.sfx("bell", { ui: true }); break;
+      case "treasureClaimed": if (ev.p === 0) { A.sfx("fanfare", { ui: true, gain: 0.55 }); A.sfx("pop", { ...o, gain: 0.8 }); } break;
+      case "guardAggro": if (view.seen(ev.x, ev.z) && Math.random() < 0.5) A.sfx("thud", { ...o, gain: 0.4 }); break;
+      case "shipPoint": if (ev.p === 0) A.sfx("select", { ui: true }); break;
+      case "shipSent": if (ev.p === 0) A.sfx("horn", { ui: true, gain: 0.45 }); break;
+      case "shipArrived": if (ev.p === 0) { A.sfx("fanfare", { ui: true, gain: 0.7 }); A.sfx("bell", { ui: true, gain: 0.5 }); } break;
     }
   }
 }
@@ -155,12 +178,13 @@ const menuEl = $("menu");
 function showMenu(html, { cls = "" } = {}) {
   menuEl.className = "on " + cls; menuEl.innerHTML = html;
   const first = menuEl.querySelector("button, a"); if (first && !TOUCH) setTimeout(() => first.focus({ preventScroll: true }), 30);
-  menuEl.querySelectorAll("button, a.mi").forEach((b) => b.addEventListener("click", () => { A.audioInit(); A.sfx("click", { ui: true }); }));
+  menuEl.querySelectorAll("button, a.mi").forEach((b) => b.addEventListener("click", () => { A.audioInit(); OST.kick(); A.sfx("click", { ui: true }); }));
 }
 function hideMenu() { menuEl.className = ""; menuEl.innerHTML = ""; }
 const on = (sel, fn) => menuEl.querySelectorAll(sel).forEach((n) => n.addEventListener("click", fn));
 
 function titleMenu() {
+  if (aiDebugEl) aiDebugEl.hidden = true;
   paused = false; match = null;
   document.body.classList.remove("in-match");
   $("hud").classList.add("off");
@@ -173,14 +197,15 @@ function titleMenu() {
       <p class="tagline">Build a colony on the river frontier, rise through three Ages, and break the Rival Crown.</p>
       <div class="menu">
         <button class="mi big" data-a="play">Skirmish <span class="v2">1 vs 1 AI</span></button>
+        <button class="mi" data-a="deck">Crown Deck <span class="v2">shipment cards</span></button>
         <button class="mi" data-a="how">How to play</button>
         <button class="mi" data-a="settings">Settings</button>
         ${ARCADE ? `<a class="mi" href="../index.html#frontier">Back to the arcade</a>` : ""}
       </div>
       <p class="foot">${wins ? `Victories: ${records.wins.map((w, i) => `${LEVELS[i].name} ${w}`).join(" · ")}` : "Your record will appear here after your first victory."}</p>
     </div>`, { cls: "titleM" });
-  on('[data-a="play"]', setupMenu); on('[data-a="how"]', () => howMenu(titleMenu)); on('[data-a="settings"]', () => settingsMenu(titleMenu));
-  A.audioInit(); A.music(true);
+  on('[data-a="play"]', setupMenu); on('[data-a="deck"]', () => deckMenu(titleMenu)); on('[data-a="how"]', () => howMenu(titleMenu)); on('[data-a="settings"]', () => settingsMenu(titleMenu));
+  A.audioInit(); OST.menu();
 }
 
 let setup = { difficulty: PA.store.get("fc:diff", 1), seed: "", map: PA.store.get("fc:map", "fords") };
@@ -191,7 +216,7 @@ function setupMenu() {
       <h2>Skirmish</h2>
       <label class="lbl">Rival Crown difficulty</label>
       <div class="segs">${diffBtns}</div>
-      <p class="hint">${["A relaxed opponent who attacks late with small companies.", "A steady opponent: first attack after ~7 minutes.", "An aggressive opponent with a stronger economy and early raids."][setup.difficulty]}</p>
+      <p class="hint">${["A relaxed opponent who attacks late with small companies.", "A balanced Behavior-Tree bot: builds Houses and Barracks as it needs them, splits villagers by what it plans to buy, and attacks your Town Center whenever 10 soldiers are ready.", "An aggressive opponent with a stronger economy and early raids."][setup.difficulty]}</p>
       <label class="lbl">Map</label>
       <div class="segs">${Object.entries(MAPS).map(([k, m]) => `<button class="seg ${setup.map === k ? "on" : ""}" data-m="${k}">${m.name}</button>`).join("")}</div>
       <p class="hint">${MAPS[setup.map].desc}</p>
@@ -205,6 +230,35 @@ function setupMenu() {
   on('[data-a="go"]', () => { setup.seed = $("seedIn").value.replace(/\D/g, ""); startMatch({ difficulty: setup.difficulty, seed: +setup.seed || undefined, map: setup.map }); });
 }
 
+// Crown Deck editor: pick 6–12 cards from the catalogue (data/cards.js); saved per browser.
+function deckMenu(back) {
+  const deck = validateDeck(PA.store.get("fc:deck", null));
+  const R = ["Discovery", "Colonial", "Fortress"];
+  const draw = () => {
+    const cards = CARDS_JSON.cards.map((c) => {
+      const on = deck.includes(c.id);
+      return `<button class="scard ${on ? "in" : "out"}" data-card="${c.id}" aria-pressed="${on}"><span class="ic">${ICON[c.icon] || ICON.ship}</span><span class="age">${["I", "II", "III"][c.age]}</span><b>${c.name}</b><p>${c.desc}</p><span class="meta"><span title="Uses per match">${c.uses == null ? "∞ uses" : c.uses + "× use"}</span><span title="Voyage time">${c.travel}s</span>${c.cooldown ? `<span title="Cooldown after arrival">CD ${c.cooldown}s</span>` : ""}</span></button>`;
+    }).join("");
+    const n = deck.length, ok = n >= DECK_SIZE.min;
+    showMenu(`
+      <div class="card wide deckEd">
+        <h2>Crown Deck</h2>
+        <p class="hint">Earn XP by building, gathering and defeating enemies; each full XP bar (and every new Age) gives one shipment. In a match press <b>O</b> to send a card from this deck. Roman numerals = earliest Age.</p>
+        <div class="deckCount ${ok ? "" : "bad"}"><b>${n} / ${DECK_SIZE.max}</b> cards ${ok ? "" : `— pick at least ${DECK_SIZE.min}`}</div>
+        <div class="deckGrid">${cards}</div>
+        <div class="row"><button class="mi" data-a="reset">Default deck</button><button class="mi big" data-a="done" ${ok ? "" : "disabled"}>Done</button></div>
+      </div>`);
+    on("[data-card]", (e) => {
+      const id = e.currentTarget.dataset.card, i = deck.indexOf(id);
+      if (i >= 0) deck.splice(i, 1); else if (deck.length < DECK_SIZE.max) deck.push(id); else return;
+      PA.store.set("fc:deck", deck); draw();
+    });
+    on('[data-a="reset"]', () => { deck.length = 0; deck.push(...CARDS_JSON.defaultDeck); PA.store.set("fc:deck", deck); draw(); });
+    on('[data-a="done"]', back);
+  };
+  draw();
+}
+
 function howMenu(back) {
   showMenu(`
     <div class="card wide how">
@@ -212,15 +266,18 @@ function howMenu(back) {
       <div class="cols">
         <div>
           <h3>Goal</h3><p>Destroy the Rival Crown's <b>Town Center</b>. Lose yours and the colony falls.</p>
-          <h3>Economy</h3><p>Villagers gather <b>food</b> (berries, deer, mills), <b>wood</b> (trees) and <b>coin</b> (gold mines), then carry it to a Town Center or Mill. Build <b>Houses</b> for population.</p>
-          <h3>Ages</h3><p>Advance at the Town Center: Discovery → Colonial (Stables, Hussars) → Fortress (Foundry, Falconets). Each Age brings a shipment of your choice.</p>
+          <h3>Economy</h3><p>Villagers gather <b>food</b> (berries, deer, mills), <b>wood</b> (trees) and <b>coin</b> (gold mines) one stroke per second, then haul each load of 10 to a Town Center or Mill — your stockpile grows when they unload. The top bar shows income per minute. Build <b>Houses</b> for population.</p>
+          <h3>Construction</h3><p>Pick a building: a hologram shows where it goes (green fits, red doesn't). Villagers raise it from the ground up; deleting an unfinished site refunds the unbuilt share.</p>
+          <h3>Ages</h3><p>Advance at the Town Center (the cost is paid up front, refunded if you cancel): Discovery → Colonial (Stable, Hussars, <b>Grenadiers</b>) → Fortress (Foundry, Falconets, <b>Skirmishers</b>). Each Age needs a few completed buildings and grants a free shipment.</p>
+          <h3>Treasures</h3><p>Glowing chests dot the frontier, each guarded by wolves or bandits. Guardians attack anyone who comes close but give up the chase far from their den. Defeat every guardian, then walk a unit onto the chest — some can only be opened by your <b>Explorer</b>. Prizes: food, wood, coin, XP or recruits.</p>
+          <h3>Crown Shipments</h3><p>Building, gathering and defeating enemies earn <b>XP</b>. Each full XP bar gives one shipment: press <b>O</b> (or the ship button) and pick a card — settlers, soldiers or resource crates arrive at your Town Center after a short voyage. Villagers unpack crates in seconds. Build your deck from the title menu.</p>
           <h3>Terrain</h3><p>Cliffs and deep water block movement. Steep slopes can be crossed but not built on. Rocky mesas have one ramp up — a fine spot for an Outpost.</p>
-          <h3>Counters</h3><p>Pikemen and Musketeers beat cavalry · Hussars ride down cannon and villagers · Falconets shred infantry and buildings.</p>
+          <h3>Counters</h3><p>Pikemen and Musketeers beat cavalry · Hussars ride down cannon and villagers · Grenadiers and Falconets shred infantry and buildings · Skirmishers out-shoot infantry.</p>
         </div>
         <div>
           <h3>${TOUCH ? "Touch" : "Mouse & keyboard"}</h3>
           ${TOUCH ? `<ul><li>Tap to select; with units selected, tap the ground or a target to order them.</li><li>Drag to scroll · pinch to zoom · long-press to deselect.</li><li><b>Box</b> button: drag a box to select many.</li><li>Use the command card for buildings, training and Ages.</li></ul>`
-          : `<ul><li><b>Left-click</b> select · <b>drag</b> box-select · <b>double-click</b> all of a type</li><li><b>Right-click</b> move / gather / build / attack</li><li><b>Arrows</b> or screen edge scroll · <b>wheel</b> zoom · <b>middle-drag</b> pan</li><li><b>Q W E R T / A S D F G / Z X C V B</b> command card</li><li><b>H</b> Town Center · <b>.</b> idle villager · <b>Ctrl+1–9</b> groups · <b>Space</b> last alert</li><li><b>G</b> build grid (green buildable, red cliff/water/slope, amber occupied) · <b>F3</b> or <b>I</b> terrain inspector (X/Y/Z under the cursor)</li><li><b>Shift</b> train 5 · keep placing · add to selection · <b>Esc</b> cancel / pause</li></ul>`}
+          : `<ul><li><b>Left-click</b> select · <b>drag</b> box-select (soldiers first; <b>Shift</b>-drag keeps villagers too) · <b>double-click</b> all of a type</li><li><b>Right-click</b> move / gather / build / attack</li><li><b>Arrows</b> (or <b>WASD</b>, see Settings), screen-edge scroll or <b>middle-drag</b> to pan · <b>wheel</b> zooms toward the cursor and tilts the view near the ground</li><li><b>Q W E R T / A S D F G / Z X C V B</b> command card</li><li><b>H</b> Town Center · <b>.</b> idle villager · <b>Ctrl+1–9</b> groups · <b>Space</b> last alert</li><li><b>G</b> build grid (green buildable, red cliff/water/slope, amber occupied) · <b>F3</b> or <b>I</b> terrain inspector (X/Y/Z under the cursor) · <b>F4</b> Rival Crown AI overlay</li><li><b>Shift</b> train 5 · keep placing · add to selection · <b>Esc</b> cancel / pause</li></ul>`}
         </div>
       </div>
       <div class="row"><button class="mi" data-a="back">Back</button></div>
@@ -236,13 +293,17 @@ function settingsMenu(back) {
       <label class="lbl">Graphics</label><div class="segs">${seg("quality", [["high", "High"], ["medium", "Medium"], ["low", "Low"]])}</div>
       <label class="lbl">Music</label><div class="segs">${seg("music", [[0, "Off"], [0.3, "Low"], [0.5, "Mid"], [0.8, "High"]])}</div>
       <label class="lbl">Sound effects</label><div class="segs">${seg("sfx", [[0, "Off"], [0.5, "Low"], [0.9, "Mid"], [1.2, "High"]])}</div>
-      <p class="hint">Graphics changes apply to the next match (Low turns off shadows).</p>
+      <label class="lbl">Camera keys</label><div class="segs">${seg("camKeys", [["arrows", "Arrows"], ["wasd", "WASD + Arrows"]])}</div>
+      <label class="lbl">Edge scrolling</label><div class="segs">${seg("edge", [[1, "On"], [0, "Off"]])}</div>
+      <p class="hint">Graphics changes apply to the next match (Low turns off shadows). With WASD camera keys, hold <b>Alt</b> for the command card's W, A, S and D.</p>
       <div class="row"><button class="mi" data-a="back">Back</button></div>
     </div>`);
   on("[data-k]", (e) => {
     const k = e.currentTarget.dataset.k, raw = e.currentTarget.dataset.v;
-    settings[k] = k === "quality" ? raw : +raw; saveSettings();
+    settings[k] = k === "quality" || k === "camKeys" ? raw : +raw; saveSettings();
     A.setVolumes({ music: settings.music, sfx: settings.sfx });
+    if (view) view.cam.configure(camSettings());
+    if (hud) hud.relabel();
     if (k === "quality") applyQuality();
     settingsMenu(back);
   });
@@ -259,7 +320,7 @@ async function startMatch({ difficulty = 1, seed, map = "fords" } = {}) {
   document.body.classList.add("in-match");
   ctl.enabled = true;
   if (Q.has("reveal")) view.fog.reveal = true;
-  A.music(true);
+  OST.matchStart(0);
   hud.notify(`Found your colony. The Rival Crown (${LEVELS[difficulty].name}) lies across the river.`, "gold");
   if (!PA.store.get("fc:tipsSeen", false) && !AUTO) {
     PA.store.set("fc:tipsSeen", true);
@@ -300,7 +361,7 @@ function endMatch(winner) {
     if (won) { records.wins[d]++; if (records.best[d] == null || sim.time < records.best[d]) records.best[d] = sim.time; } else records.losses[d]++;
     PA.store.set("fc:records", records);
   }
-  A.music(false);
+  OST.finish();
   A.sfx(won ? "victory" : "defeat", { ui: true });
   ctl.enabled = false; ctl.mode = null;
   setTimeout(() => {
@@ -328,6 +389,18 @@ function endMatch(winner) {
 }
 
 // ---------------------------------------------------------------- global keys, resize, orientation
+// F4: Rival Crown AI overlay (mode, wave, economy plan, Behavior Tree branches that fired)
+let aiDebugEl = null, aiDebugT = 0;
+addEventListener("keydown", (e) => {
+  if (e.code !== "F4" || !match) return;
+  e.preventDefault();
+  if (!aiDebugEl) {
+    aiDebugEl = document.createElement("pre"); aiDebugEl.id = "aiDebug"; aiDebugEl.hidden = true;
+    aiDebugEl.style.cssText = "position:fixed;right:10px;top:52px;z-index:30;margin:0;max-width:min(560px,calc(100vw - 20px));padding:8px 10px;border-radius:6px;background:rgba(20,14,9,.88);border:1px solid #7a5a32;color:#efe3c4;font:600 11.5px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;pointer-events:none";
+    document.body.appendChild(aiDebugEl);
+  }
+  aiDebugEl.hidden = !aiDebugEl.hidden; aiDebugT = 1;
+});
 addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (menuEl.classList.contains("on")) { if (match && !sim.over && paused) resume(); return; }
@@ -340,8 +413,8 @@ addEventListener("resize", () => { if (!renderer) return; renderer.setSize(inner
 document.addEventListener("visibilitychange", () => { if (document.hidden && match && !paused && !sim.over && !AUTO) pauseMenu(); });
 function checkRotate() { $("rotate").classList.toggle("on", TOUCH && innerHeight > innerWidth); }
 checkRotate();
-addEventListener("pointerdown", () => A.audioInit(), { once: true });
-addEventListener("keydown", () => A.audioInit(), { once: true });
+addEventListener("pointerdown", () => { A.audioInit(); OST.kick(); }, { once: true });
+addEventListener("keydown", () => { A.audioInit(); OST.kick(); }, { once: true });
 
 // ---------------------------------------------------------------- thumbnail
 async function thumbShot() {

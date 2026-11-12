@@ -71,8 +71,8 @@ export class Controller {
     if (units.length) {
       if (e >= 0 && !(this.own(e) && (st.mask[e] & CM.UNIT))) {
         this.issue({ t: "target", ids: units, target: e });
-        const enemy = st.owner[e] < 2 && st.owner[e] !== this.me;
-        this.view.addMarker(st.x[e], st.z[e], enemy ? "attack" : (st.mask[e] & CM.RESOURCE) ? "gather" : "move");
+        const enemy = this.sim.enemies(this.me, st.owner[e]) && !(st.mask[e] & (CM.RESOURCE | CM.TREASURE));
+        this.view.addMarker(st.x[e], st.z[e], enemy ? "attack" : (st.mask[e] & (CM.RESOURCE | CM.TREASURE)) ? "gather" : "move");
         this.sfx("order", { ui: true });
         return;
       }
@@ -167,7 +167,9 @@ export class Controller {
     addEventListener("pointermove", (e) => this.move(e), sig);
     addEventListener("pointerup", (e) => this.up(e), sig);
     addEventListener("pointercancel", (e) => { this.pointers.delete(e.pointerId); this.drag = null; this.hideBox(); }, sig);
-    cv.addEventListener("wheel", (e) => { e.preventDefault(); if (this.enabled) this.view.cam.zoom(e.deltaY * (e.deltaMode === 1 ? 30 : 1)); }, { passive: false, signal: this.ac.signal });
+    // wheel zoom, middle-drag, arrow/WASD keys and edge scrolling belong to the camera (render/camera.js)
+    this.view.cam.gate = () => this.enabled;
+    this.view.cam.edgeBlocked = () => !!(this.drag && this.drag.box);
     document.addEventListener("mouseleave", () => (this.mouse.inside = false), sig);
     document.addEventListener("mouseenter", () => (this.mouse.inside = true), sig);
     addEventListener("keydown", (e) => this.key(e, true), sig);
@@ -178,7 +180,7 @@ export class Controller {
     if (!this.enabled) return;
     this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.inside = true;
     if (e.pointerType === "touch") return this.touchDown(e);
-    if (e.button === 1) { this.mid = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
+    if (e.button === 1) return; // camera grab (render/camera.js)
     if (e.button === 2) {
       if (this.mode) { this.mode = null; return; }
       this.rdown = { x: e.clientX, y: e.clientY };
@@ -190,16 +192,15 @@ export class Controller {
     this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.inside = true;
     if (!this.enabled) return;
     if (e.pointerType === "touch") return this.touchMove(e);
-    if (this.mid) { const k = 0.06; this.view.cam.pan(-(e.clientX - this.mid.x) * k, -(e.clientY - this.mid.y) * k); this.mid = { x: e.clientX, y: e.clientY }; return; }
     if (this.drag && !this.mode) {
       const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
       if (!this.drag.box && Math.hypot(dx, dy) > 7) this.drag.box = true;
-      if (this.drag.box) this.showBox(this.drag.x, this.drag.y, e.clientX, e.clientY);
+      if (this.drag.box) { this.showBox(this.drag.x, this.drag.y, e.clientX, e.clientY); this.previewBox(this.drag.x, this.drag.y, e.clientX, e.clientY); }
     }
   }
   up(e) {
     if (e.pointerType === "touch") return this.touchUp(e);
-    if (e.button === 1) { this.mid = null; return; }
+    if (e.button === 1) return;
     if (!this.enabled) { this.drag = null; this.hideBox(); return; }
     if (e.button === 2 && this.rdown) {
       if (Math.hypot(e.clientX - this.rdown.x, e.clientY - this.rdown.y) < 12 && e.target === this.canvas) this.smartCommand(e.clientX, e.clientY);
@@ -212,7 +213,7 @@ export class Controller {
     if (this.mode && this.mode.kind === "amove") { if (e.target === this.canvas) this.attackMove(e.clientX, e.clientY); return; }
     if (d.box) {
       this.hideBox();
-      const ids = this.view.boxSelect(Math.min(d.x, e.clientX), Math.min(d.y, e.clientY), Math.max(d.x, e.clientX), Math.max(d.y, e.clientY), innerWidth, innerHeight);
+      const ids = this.filterBox(this.view.boxSelect(Math.min(d.x, e.clientX), Math.min(d.y, e.clientY), Math.max(d.x, e.clientX), Math.max(d.y, e.clientY), innerWidth, innerHeight), e.shiftKey);
       if (ids.length) { this.setSel(ids, e.shiftKey); this.sfx("select", { ui: true }); }
       else if (!e.shiftKey) this.clearSel();
       return;
@@ -229,7 +230,18 @@ export class Controller {
     const s = this.boxEl.style; this.boxEl.hidden = false;
     s.left = Math.min(x0, x1) + "px"; s.top = Math.min(y0, y1) + "px"; s.width = Math.abs(x1 - x0) + "px"; s.height = Math.abs(y1 - y0) + "px";
   }
-  hideBox() { if (this.boxEl) this.boxEl.hidden = true; }
+  hideBox() { if (this.boxEl) this.boxEl.hidden = true; this.view.boxPreview = null; }
+  // Live preview: units under the marquee get a faint ring while dragging (throttled to ~30 Hz).
+  previewBox(x0, y0, x1, y1) {
+    const now = performance.now(); if (now - (this.lastPrev || 0) < 33) return; this.lastPrev = now;
+    this.view.boxPreview = new Set(this.filterBox(this.view.boxSelect(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1), innerWidth, innerHeight), false));
+  }
+  // Soldiers win over villagers in a mixed box (AoE-style), unless Shift keeps everything.
+  filterBox(ids, keepAll) {
+    if (keepAll) return ids;
+    const st = this.sim.st, mil = ids.filter((e) => !(st.mask[e] & CM.GATHERER));
+    return mil.length && mil.length < ids.length ? mil : ids;
+  }
 
   // ---- touch: tap = select / smart order, one-finger drag = pan (or box in box mode), pinch = zoom
   touchDown(e) {
@@ -247,7 +259,7 @@ export class Controller {
     }
     if (Math.hypot(p.x - p.sx, p.y - p.sy) > 12) p.moved = true;
     if (!p.moved) return;
-    if (this.boxMode && !this.mode) this.showBox(p.sx, p.sy, p.x, p.y);
+    if (this.boxMode && !this.mode) { this.showBox(p.sx, p.sy, p.x, p.y); this.previewBox(p.sx, p.sy, p.x, p.y); }
     else this.view.cam.pan(-(e.clientX - px) * 0.075, -(e.clientY - py) * 0.075);
   }
   touchUp(e) {
@@ -257,7 +269,7 @@ export class Controller {
     if (p.moved) {
       if (this.boxMode && !this.mode) {
         this.hideBox();
-        const ids = this.view.boxSelect(Math.min(p.sx, p.x), Math.min(p.sy, p.y), Math.max(p.sx, p.x), Math.max(p.sy, p.y), innerWidth, innerHeight);
+        const ids = this.filterBox(this.view.boxSelect(Math.min(p.sx, p.x), Math.min(p.sy, p.y), Math.max(p.sx, p.x), Math.max(p.sy, p.y), innerWidth, innerHeight), false);
         if (ids.length) { this.setSel(ids); this.sfx("select", { ui: true }); }
         this.boxMode = false; this.onChange();
       }
@@ -311,15 +323,6 @@ export class Controller {
 
   update(dt) {
     if (!this.enabled) return;
-    const k = this.keys; let px = 0, pz = 0;
-    if (k.has("ArrowLeft")) px -= 1; if (k.has("ArrowRight")) px += 1;
-    if (k.has("ArrowUp")) pz -= 1; if (k.has("ArrowDown")) pz += 1;
-    if (!this.touch && this.mouse.inside && !this.drag && !this.mid && document.hasFocus()) {
-      const m = 4;
-      if (this.mouse.x <= m) px -= 1; else if (this.mouse.x >= innerWidth - m) px += 1;
-      if (this.mouse.y <= m) pz -= 1; else if (this.mouse.y >= innerHeight - m) pz += 1;
-    }
-    if (px || pz) this.view.cam.pan(px * dt * 34, pz * dt * 34);
     // hover + ghost + build grid
     this.view.gridState = null;
     if (this.mode && this.mode.kind === "place") {
@@ -373,7 +376,8 @@ export class Controller {
     let c = "";
     if (this.mode && this.mode.kind === "amove") c = "c-attack";
     else if (e >= 0 && this.units().length) {
-      if (st.owner[e] < 2 && st.owner[e] !== this.me) c = "c-attack";
+      if (st.mask[e] & CM.TREASURE) c = "c-gather";
+      else if (this.sim.enemies(this.me, st.owner[e]) && !(st.mask[e] & CM.RESOURCE)) c = "c-attack";
       else if ((st.mask[e] & CM.RESOURCE) && this.villagers().length) c = "c-gather";
       else if (this.own(e) && (st.mask[e] & CM.BUILDING) && st.prog[e] < 1 && this.villagers().length) c = "c-build";
     }

@@ -1,30 +1,37 @@
 // Frontier Crown — grid A* (octile, binary heap on typed arrays, stamp-based reset)
 // with goal *rectangles* (reach a building's edge) and line-of-sight smoothing.
 
-import { W, H } from "./map.js";
+import { W, H, T } from "./map.js";
+
+// Cost multiplier for leaving tile k: climbing slopes and wading through shallows cost extra,
+// so paths prefer flat ground and bridges of land (terrain-aware A* on the 3D heightmap).
+export function stepCost(grid, k) {
+  return 1 + grid.slope[k] * 1.2 + (grid.terrain[k] === T.SHALLOW ? 0.6 : 0);
+}
 
 const N = W * H;
 const g = new Float32Array(N), f = new Float32Array(N);
 const from = new Int32Array(N);
 const seen = new Uint32Array(N), closed = new Uint32Array(N);
 let stamp = 0;
-const heap = new Int32Array(N + 1); let hn = 0;
+// Binary heap of (f, tile) pairs; keys are frozen at push time so decreased f-values never break heap order.
+const heap = new Int32Array(N * 8 + 1), hkey = new Float32Array(N * 8 + 1); let hn = 0;
 
 function push(k) {
-  let i = ++hn; heap[i] = k;
-  while (i > 1) { const p = i >> 1; if (f[heap[p]] <= f[k]) break; heap[i] = heap[p]; i = p; }
-  heap[i] = k;
+  const v = f[k]; let i = ++hn;
+  while (i > 1) { const p = i >> 1; if (hkey[p] <= v) break; heap[i] = heap[p]; hkey[i] = hkey[p]; i = p; }
+  heap[i] = k; hkey[i] = v;
 }
 function pop() {
-  const top = heap[1], last = heap[hn--];
+  const top = heap[1], lk = heap[hn], lv = hkey[hn]; hn--;
   let i = 1;
   while (true) {
     let c = i << 1; if (c > hn) break;
-    if (c + 1 <= hn && f[heap[c + 1]] < f[heap[c]]) c++;
-    if (f[heap[c]] >= f[last]) break;
-    heap[i] = heap[c]; i = c;
+    if (c + 1 <= hn && hkey[c + 1] < hkey[c]) c++;
+    if (hkey[c] >= lv) break;
+    heap[i] = heap[c]; hkey[i] = hkey[c]; i = c;
   }
-  heap[i] = last;
+  heap[i] = lk; hkey[i] = lv;
   return top;
 }
 
@@ -68,7 +75,7 @@ export function findPath(grid, sx, sz, goal, reach = 0, limit = 9000) {
       if (blk[nk]) continue;
       if (d >= 4 && (blk[j * W + ni] || blk[nj * W + i])) continue; // no corner cutting
       if (closed[nk] === stamp) continue;
-      const ng = g[k] + COST[d];
+      const ng = g[k] + COST[d] * (1 + grid.slope[nk] * 1.2 + (grid.terrain[nk] === T.SHALLOW ? 0.6 : 0));
       if (seen[nk] === stamp && ng >= g[nk]) continue;
       seen[nk] = stamp; g[nk] = ng; from[nk] = k;
       f[nk] = ng + rectDist(ni, nj, goal) * 1.001;

@@ -2,35 +2,49 @@
 // instanced meshes, vertex-shader animation, LOD, fog of war and particles.
 
 import * as THREE from "three";
-import { DEF_LIST, DEFS, TEAM_COLORS, C } from "../data/defs.js";
+import { DEF_LIST, DEFS, TEAM_COLORS, C, HARVEST_PULSE } from "../data/defs.js";
 import { CM, S, MAX } from "../sim/ecs.js";
 import { W, H, WATER_Y } from "../sim/map.js";
-import { lerp, lerpAngle } from "../core/core.js";
+import { lerp, lerpAngle, TICK } from "../core/core.js";
+import { createFloaters } from "./floaters.js";
+import { createShipFx } from "./shipfx.js";
+import { createPhysics } from "./physics.js";
+import { ballisticAt } from "../sim/ballistics.js";
 import { createModels } from "./models.js";
 import { createInstancing } from "./instancing.js";
 import { createFx } from "./fx.js";
-import { RTSCamera } from "./camera.js";
-import { buildWater, buildSky, FogTexture } from "./terrain.js";
+import { RTSCameraController } from "./camera.js";
+import { buildWater, buildSky } from "./terrain.js";
+import { CanvasFog } from "./fog-canvas.js";
+import { UnitActors } from "./unit-actors.js";
+import { STATE } from "./unit-animator.js";
 import { buildTerrainGeometry, buildTintTexture, buildMinimapImage } from "../terrain/terrain-mesh.js";
 import { createGroundTextures, createTerrainMaterial } from "../terrain/splat-material.js";
 import { TerrainPicker } from "../terrain/picker.js";
 import { BuildGrid } from "../terrain/build-grid.js";
+import { chooseClip, KIND_OF, CLIP, WORK_SYNC } from "./anim.js";
+import { GT } from "../sim/systems/command.js";
 
 let groundTex = null; // generated once per page
 
-const UNIT_H = { villager: 1.3, musketeer: 1.4, pikeman: 1.4, hussar: 2.15, falconet: 1.25, deer: 1.3 };
+const UNIT_H = { villager: 1.3, musketeer: 1.4, pikeman: 1.4, grenadier: 1.5, skirmisher: 1.4, explorer: 1.45, bandit: 1.4, wolf: 0.95, hussar: 2.15, falconet: 1.25, deer: 1.3 };
+const UNIT_TYPES = ["villager", "musketeer", "pikeman", "grenadier", "skirmisher", "explorer", "bandit", "wolf", "hussar", "falconet"];
+// treasure aura colour by reward: food, wood, coin, XP, units
+const AURA = [[1, 0.45, 0.3], [0.55, 0.95, 0.4], [1, 0.8, 0.28], [0.45, 0.72, 1], [0.95, 0.95, 0.95]];
 const BLD_H = { towncenter: 5.4, house: 2.3, mill: 3.4, barracks: 2.7, stable: 2.8, foundry: 4.1, outpost: 4.3 };
-const GAIT = { villager: 5.2, musketeer: 5.0, pikeman: 5.0, hussar: 2.6, falconet: 3.0, deer: 4.5 };
+const GAIT = { villager: 5.2, musketeer: 5.0, pikeman: 5.0, grenadier: 5.0, skirmisher: 5.1, explorer: 4.6, bandit: 5.0, wolf: 3.6, hussar: 2.6, falconet: 3.0, deer: 4.5 };
 const LOD_DIST = 46;
 
 export class View {
-  constructor(renderer, sim, { me = 0, quality = "high" } = {}) {
+  constructor(renderer, sim, { me = 0, quality = "high", assets = null, actorBudget } = {}) {
     this.r = renderer; this.sim = sim; this.me = me; this.quality = quality;
     const scene = this.scene = new THREE.Scene();
     scene.background = new THREE.Color(0xcfe0ea);
     scene.fog = new THREE.Fog(0xcfe0ea, 90, 210);
     this.camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.5, 600);
-    this.cam = new RTSCamera(THREE, this.camera, (x, z) => sim.grid.heightAt(x, z));
+    // classic RTS camera: inertial pan (keys / middle-drag / edge), pitch-on-zoom, map bounds
+    this.cam = new RTSCameraController(THREE, this.camera, (x, z) => sim.grid.heightAt(x, z), W);
+    this.cam.attach(renderer.domElement);
     const tc = sim.players[me].tc;
     if (tc >= 0) this.cam.focus(sim.st.x[tc] + 4, sim.st.z[tc] + 2);
 
@@ -50,10 +64,17 @@ export class View {
     scene.add(buildSky(THREE));
 
     // fog of war + instancing helpers
-    this.fog = new FogTexture(THREE);
+    // fog of war: hidden canvases → CanvasTexture sampled by every material (render/fog-canvas.js)
+    this.fog = new CanvasFog(THREE, sim, me, { W, H, res: quality === "high" ? 4 : quality === "low" ? 2 : 3 });
     const inst = this.inst = createInstancing(THREE, { fogTex: this.fog.tex, mapSize: W });
     const mk = (anim) => inst.patch(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.82, metalness: 0.02 }), { anim });
     this.matUnit = mk(true); this.matStatic = mk(false);
+    // buildings: same look plus the construction reveal (cut line, glowing band, hollow walls)
+    this.matBld = inst.patch(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.82, metalness: 0.02, side: THREE.DoubleSide }), { build: true });
+    this.bldDepth = inst.buildDepth();
+    this.matHolo = inst.holoMaterial({ color: 0x9fd8ff, instanced: true, opacity: 0.85 });
+    // rigged glTF soldiers for the closest units (render/unit-actors.js); everything else stays instanced
+    this.actors = new UnitActors(scene, assets || { has: () => false }, { patch: (m) => inst.patch(m), teamRGB: TEAM_COLORS.map((c) => { const k = new THREE.Color(c); return [k.r, k.g, k.b]; }), quality, budget: actorBudget });
 
     // terrain: heightmap PlaneGeometry + splat shader + build grid + exact picker
     if (!groundTex) groundTex = createGroundTextures(THREE);
@@ -76,12 +97,22 @@ export class View {
     const M = this.models = createModels(THREE);
     const pool = (geo, cap, o) => { const p = new inst.InstancePool(geo, o.anim ? this.matUnit : this.matStatic, cap, o); scene.add(p.mesh); return p; };
     this.unitPools = {};
-    for (const k of ["villager", "musketeer", "pikeman", "hussar", "falconet"]) {
+    for (const k of UNIT_TYPES) {
       this.unitPools[k] = [pool(M.units[k](0), 420, { anim: true, name: k }), pool(M.units[k](1), 420, { anim: true, shadow: false, name: k + "-lod" })];
     }
     this.deerPool = pool(M.units.deer(), 160, { anim: true, name: "deer" });
     this.bldPools = {};
-    for (const k of Object.keys(M.buildings)) this.bldPools[k] = pool(M.buildings[k](), k === "house" ? 80 : 40, { name: k });
+    this.holoPools = {};
+    const IB = { name: "iBuild", size: 3, def: [1, 1, 0] };
+    for (const k of Object.keys(M.buildings)) {
+      const geo = M.buildings[k](), cap = k === "house" ? 80 : 40;
+      const bp = this.bldPools[k] = new inst.InstancePool(geo, this.matBld, cap, { name: k, extra: IB, depth: this.bldDepth }); scene.add(bp.mesh);
+      // unbuilt remainder of each construction site, drawn as a hologram (one pool per type, empty most of the time)
+      const hp = this.holoPools[k] = new inst.InstancePool(geo, this.matHolo, 24, { name: k + "-holo", extra: IB, shadow: false, receive: false });
+      hp.mesh.renderOrder = 3; scene.add(hp.mesh);
+      geo.dispose();
+    }
+    this.builtAt = new Map(); // entity → time it completed (completion flash)
     this.scaffold = {}; this.rubblePool = {};
     for (const sz of [2, 3, 4, 5]) { this.scaffold[sz] = pool(M.scaffold(sz), 30, { name: "scaffold" }); this.rubblePool[sz] = pool(M.rubble(sz), 30, { shadow: false, name: "rubble" }); }
     this.blades = pool(M.millBlades(), 20, { name: "blades" });
@@ -89,6 +120,38 @@ export class View {
     this.stumpPool = pool(M.resources.stump(), 2000, { shadow: false, name: "stump" });
     this.bushPool = pool(M.resources.bush(), 120, { name: "bush" });
     this.minePool = pool(M.resources.goldmine(), 30, { name: "mine" });
+    this.cratePools = [0, 1, 2].map((r) => pool(M.resources.crate(r), 48, { name: "crate" + r }));
+    // treasures: chest + additive aura disc (radial glow, turning rays, pulse) coloured by the prize
+    this.chestPool = pool(M.resources.chest(), 40, { name: "chest" });
+    this.auraMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, // normal blending: additive glow on green grass shifts every hue toward green
+      uniforms: { uTime: inst.shared.uTime, uFog: inst.shared.uFog, uMap: inst.shared.uMap },
+      vertexShader: /* glsl */ `
+        uniform float uMap; varying vec2 vUv; varying vec3 vCol; varying vec2 vFogUv;
+        void main() {
+          vUv = uv * 2.0 - 1.0;
+          vec4 wp = modelMatrix * instanceMatrix * vec4( position, 1.0 );
+          vCol = instanceColor; vFogUv = wp.xz / uMap;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }`,
+      fragmentShader: /* glsl */ `
+        uniform float uTime; uniform sampler2D uFog; varying vec2 vUv; varying vec3 vCol; varying vec2 vFogUv;
+        void main() {
+          float r = length( vUv ); if ( r > 1.0 ) discard;
+          float ang = atan( vUv.y, vUv.x );
+          float ring = smoothstep( 0.72, 0.88, r ) * ( 1.0 - smoothstep( 0.9, 1.0, r ) );
+          float glow = ( 1.0 - r ) * ( 1.0 - r ) * 0.6;
+          float rays = pow( 0.5 + 0.5 * sin( ang * 7.0 + uTime * 1.3 ), 6.0 ) * ( 1.0 - r ) * 0.7;
+          float pulse = 0.72 + 0.28 * sin( uTime * 3.0 );
+          float a = clamp( ( ring * 0.9 + glow + rays ) * pulse, 0.0, 0.85 ) * texture2D( uFog, vFogUv ).r;
+          gl_FragColor = vec4( min( vCol * ( 1.05 + rays ), vec3( 1.0 ) ), a );
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.auraPool = new inst.InstancePool(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this.auraMat, 40, { shadow: false, receive: false, name: "aura" });
+    this.auraPool.mesh.renderOrder = 2; scene.add(this.auraPool.mesh);
+    this.crates = new Map();    // crate entity → time it landed (drop animation)
+    this.arrivedAt = new Map(); // shipped unit → arrival time (glow)
     // overlays
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
     inst.patch(ringMat, { fog: false });
@@ -112,9 +175,18 @@ export class View {
     this.ghost = null; this.ghostDef = null;
     this.fx = createFx(THREE, { fogUniform: inst.shared.uFog, mapSize: W });
     for (const o of this.fx.objects) scene.add(o);
+    this.floaters = createFloaters(THREE); scene.add(this.floaters.mesh);
+    this.shipfx = createShipFx(THREE, { quality }); scene.add(this.shipfx.group);
+    // cosmetic rigid bodies (cannon-es): blast ragdolls + building debris on the real heightfield
+    this.phys = createPhysics(THREE, { grid: sim.grid, W, H, quality, inst, fx: this.fx }); scene.add(this.phys.mesh);
+    this.ragdolls = []; this.hop = new Map(); this.bp = [0, 0, 0];
 
     // per-entity view state
     this.phase = new Float32Array(MAX); this.mv = new Float32Array(MAX);
+    this.clip = new Uint8Array(MAX); this.clipT = new Float32Array(MAX);
+    this.lastShot = new Float32Array(MAX).fill(-99); this.shotKind = new Uint8Array(MAX);
+    this.forceClip = new Map();
+    this.boxPreview = null; // units inside the marquee while dragging
     this.known = new Uint8Array(MAX); this.knownGen = new Uint16Array(MAX);
     this.corpses = []; this.rubble = []; this.stumps = []; this.markers = []; this.burning = [];
     this.selection = new Set(); this.hover = -1;
@@ -138,6 +210,7 @@ export class View {
     for (const ev of list) {
       switch (ev.type) {
         case "shot": {
+          if (ev.e >= 0) { this.lastShot[ev.e] = this.time; this.shotKind[ev.e] = ev.kind === "melee" ? 1 : 0; }
           if (!this.seen(ev.x, ev.z) && !this.seen(ev.tx, ev.tz)) break;
           const dx = ev.tx - ev.x, dz = ev.tz - ev.z, L = Math.hypot(dx, dz) || 1;
           const y = g.heightAt(ev.x, ev.z);
@@ -148,18 +221,30 @@ export class View {
           } else if (ev.kind === "cannon") {
             fx.cannon(ev.x, y + 0.6, ev.z, dx / L, dz / L);
             if (this.dist2(ev.x, ev.z) < 900) this.cam.shake = Math.min(1, this.cam.shake + 0.25);
+          } else if (ev.kind === "grenade") {
+            fx.fuse(ev.x, y + 1.3, ev.z);
           } else if (ev.kind === "melee" && Math.random() < 0.6) fx.clash(ev.tx - dx / L * 0.3, g.heightAt(ev.tx, ev.tz) + 0.9, ev.tz - dz / L * 0.3);
           break;
         }
-        case "explode": if (this.seen(ev.x, ev.z)) { fx.explode(ev.x, g.heightAt(ev.x, ev.z), ev.z); if (this.dist2(ev.x, ev.z) < 900) this.cam.shake = Math.min(1.2, this.cam.shake + 0.35); } break;
+        case "knock": this.hop.set(ev.e, { t: this.time, p: ev.power }); break;
+        case "explode": if (this.seen(ev.x, ev.z)) { this.markers.push({ x: ev.x, z: ev.z, t: 0, kind: "blast", r: ev.r || 1 }); fx.explode(ev.x, g.heightAt(ev.x, ev.z), ev.z, ev.small ? 0.55 : 1); if (this.dist2(ev.x, ev.z) < 900) this.cam.shake = Math.min(1.2, this.cam.shake + (ev.small ? 0.12 : 0.35)); } break;
         case "died": {
           const d = DEF_LIST[ev.def];
           this.selection.delete(ev.e);
           if (!this.seen(ev.x, ev.z) && ev.owner !== this.me) break;
           if (ev.building) {
-            this.rubble.push({ size: d.size, x: ev.x, z: ev.z, t: 0 });
-            fx.dust(ev.x, g.heightAt(ev.x, ev.z), ev.z, d.size * 0.6, 26); fx.explode(ev.x, g.heightAt(ev.x, ev.z) + 0.5, ev.z);
-          } else this.corpses.push({ def: d.id, x: ev.x, z: ev.z, rot: ev.rot, owner: ev.owner, t: 0, side: ev.e % 2 ? 1 : -1 });
+            // the intact mesh is gone this frame: debris bursts out, dust rolls, the rubble pile rises as it settles
+            const y = this.footY(ev.x, ev.z, d.size);
+            this.phys.collapse(d.id, this.bldPools[d.id].geo, ev.x, y, ev.z, d.size, BLD_H[d.id] || 3, ev.blast);
+            this.rubble.push({ size: d.size, x: ev.x, z: ev.z, t: 0, smoke: 3.5 });
+            fx.dust(ev.x, y, ev.z, d.size * 0.7, 40); fx.explode(ev.x, y + 0.5, ev.z, Math.min(1.4, d.size * 0.3));
+            if (this.dist2(ev.x, ev.z) < 900) this.cam.shake = Math.min(1.2, this.cam.shake + 0.3);
+          } else if (ev.blast && d.id !== "deer" && this.phys.ragdoll) {
+            const kind = d.id === "hussar" ? "horse" : d.id === "falconet" ? "cannon" : d.id === "wolf" ? "beast" : "human";
+            const r = this.phys.ragdoll(d.id, ev.owner, kind, ev.x, g.heightAt(ev.x, ev.z), ev.z, ev.rot, ev.blast);
+            if (r) this.ragdolls.push(r);
+            else this.corpses.push({ def: d.id, x: ev.x, z: ev.z, rot: ev.rot, owner: ev.owner, t: 0, side: ev.e % 2 ? 1 : -1 });
+          } else if (!this.actors.kill(ev.e)) this.corpses.push({ def: d.id, x: ev.x, z: ev.z, rot: ev.rot, owner: ev.owner, t: 0, side: ev.e % 2 ? 1 : -1 });
           break;
         }
         case "depleted": {
@@ -169,7 +254,26 @@ export class View {
           this.staticDirty = true;
           break;
         }
-        case "built": if (this.seen(st.x[ev.e], st.z[ev.e])) fx.dust(st.x[ev.e], g.heightAt(st.x[ev.e], st.z[ev.e]), st.z[ev.e], DEF_LIST[st.def[ev.e]].size * 0.5, 16); break;
+        case "built":
+          this.builtAt.set(ev.e, this.time);
+          if (this.seen(st.x[ev.e], st.z[ev.e])) {
+            const d = DEF_LIST[st.def[ev.e]], x = st.x[ev.e], z = st.z[ev.e], y = this.footY(x, z, d.size);
+            fx.dust(x, y, z, d.size * 0.5, 16); fx.sparkle(x, y + (BLD_H[d.id] || 3) * 0.7, z, 1, 0.85, 0.5);
+          }
+          break;
+        case "treasureClaimed": {
+          if (ev.p !== this.me && !this.seen(ev.x, ev.z)) break;
+          const y = g.heightAt(ev.x, ev.z), rw = ev.reward;
+          this.shipfx.burst(ev.x, y, ev.z, 0.9);
+          for (let k = 0; k < 3; k++) fx.sparkle(ev.x, y + 0.5 + k * 0.5, ev.z, 1, 0.9, 0.5);
+          if (ev.p === this.me) { if (rw.res != null) this.floaters.spawn(ev.x, y + 1.2, ev.z, rw.amount, rw.res); else if (rw.xp) this.floaters.spawn(ev.x, y + 1.2, ev.z, rw.xp, 3); }
+          for (const u of ev.units) this.arrivedAt.set(u, this.time);
+          break;
+        }
+        case "claimBlocked": if (ev.p === this.me) this.addMarker(ev.x, ev.z, "attack"); break;
+        case "deposit":
+          if (ev.p === this.me && this.dist2(ev.x, ev.z) < 2500) this.floaters.spawn(ev.x, g.heightAt(ev.x, ev.z) + 1.3, ev.z, ev.amt, ev.res);
+          break;
         case "placed": break;
         case "work":
           if (this.dist2(ev.x, ev.z) < 1600 && this.seen(ev.x, ev.z)) {
@@ -180,7 +284,19 @@ export class View {
           break;
         case "age": if (ev.p === this.me) { const tc = this.sim.players[ev.p].tc; if (tc >= 0) fx.sparkle(st.x[tc], g.heightAt(st.x[tc], st.z[tc]) + 3, st.z[tc], 1, 0.85, 0.4); } break;
         case "trained": if (st.owner[ev.e] === this.me) fx.dust(st.x[ev.e], g.heightAt(st.x[ev.e], st.z[ev.e]), st.z[ev.e], 0.3, 3); break;
-        case "spawn": if (st.mask[ev.e] & CM.RESOURCE) this.staticDirty = true; break;
+        case "spawn":
+          if (ev.crate) this.crates.set(ev.e, this.time + (this.crates.size % 7) * 0.08);
+          else if (st.mask[ev.e] & CM.RESOURCE) this.staticDirty = true;
+          break;
+        case "shipArrived": {
+          if (ev.p !== this.me && !this.seen(ev.x, ev.z)) break;
+          const d = DEF_LIST[st.def[ev.at]], y = this.footY(ev.x, ev.z, d.size);
+          this.shipfx.burst(ev.x, y, ev.z, d.size * 0.62);
+          for (let k = 0; k < 3; k++) fx.sparkle(ev.x + (Math.random() - 0.5) * d.size, y + 2 + k, ev.z + (Math.random() - 0.5) * d.size, 1, 0.85, 0.45);
+          for (const e of ev.units) { this.arrivedAt.set(e, this.time); fx.sparkle(st.x[e], g.heightAt(st.x[e], st.z[e]) + 0.6, st.z[e], 1, 0.9, 0.55); }
+          if (ev.p === this.me && this.dist2(ev.x, ev.z) < 1600) this.cam.shake = Math.min(1, this.cam.shake + 0.2);
+          break;
+        }
       }
     }
   }
@@ -224,13 +340,16 @@ export class View {
     if (this.ghostDef !== defId) {
       if (this.ghost) { this.scene.remove(this.ghost); this.ghost.geometry.dispose(); }
       const geo = this.models.buildings[defId]();
-      this.ghostMat = this.ghostMat || new THREE.MeshBasicMaterial({ color: 0x7cff9a, transparent: true, opacity: 0.45, depthWrite: false });
+      geo.computeBoundingBox();
+      // hologram ghost: fresnel rim + scan lines + sweep, green when the footprint is free, red when not
+      this.ghostMat = this.ghostMat || this.inst.holoMaterial({ color: 0x7cff9a, instanced: false });
+      this.ghostMat.uniforms.uHeight.value = geo.boundingBox.max.y;
       this.ghost = new THREE.Mesh(geo, this.ghostMat); this.ghost.renderOrder = 3; this.scene.add(this.ghost); this.ghostDef = defId;
     }
     const d = DEFS[defId], x = i + d.size / 2, z = j + d.size / 2;
     this.ghost.visible = true;
     this.ghost.position.set(x, this.footY(x, z, d.size), z);
-    this.ghostMat.color.set(ok ? 0x7cff9a : 0xff5a48);
+    this.ghostMat.uniforms.uColor.value.set(ok ? 0x7cff9a : 0xff5a48);
   }
 
   // ------------------------------------------------------------------ frame
@@ -239,7 +358,7 @@ export class View {
     this.time += dt;
     this.inst.shared.uTime.value = this.time;
     this.cam.update(dt);
-    this.fog.update(g, me, dt);
+    this.fog.update();
     if (this.gridState || this.buildGrid.alpha > 0) { this.buildGrid.reveal = this.fog.reveal; this.buildGrid.update(sim.fogVersion); }
     this.buildGrid.apply(this.terrainUniforms, dt, this.gridState);
     if (this.staticDirty) this.rebuildStatics();
@@ -253,7 +372,8 @@ export class View {
 
     for (const k in this.unitPools) { this.unitPools[k][0].begin(); this.unitPools[k][1].begin(); }
     this.deerPool.begin();
-    for (const k in this.bldPools) this.bldPools[k].begin();
+    this.actors.begin();
+    for (const k in this.bldPools) { this.bldPools[k].begin(); this.holoPools[k].begin(); }
     for (const k in this.scaffold) { this.scaffold[k].begin(); this.rubblePool[k].begin(); }
     this.blades.begin(); this.rings.begin(); this.bars.begin(); this.balls.begin();
     const barQ = this.camera.quaternion;
@@ -268,29 +388,59 @@ export class View {
         const x = lerp(st.px[e], st.x[e], alpha), z = lerp(st.pz[e], st.z[e], alpha);
         if (o !== me && !reveal && !vis[tile(x, z)]) continue;
         let y = g.heightAt(x, z);
+        const hp = this.hop.get(e);
+        if (hp) { const k = (this.time - hp.t) / 0.4; if (k >= 1) this.hop.delete(e); else y += Math.sin(k * Math.PI) * Math.min(0.9, hp.p * 0.12); }
         this.sph.set(this.tv.set(x, y + 0.7, z), 1.6);
         if (!this.frustum.intersectsSphere(this.sph)) continue;
         const rot = lerpAngle(st.prot[e], st.rot[e], alpha);
         const spd = Math.hypot(st.vx[e], st.vz[e]);
-        this.phase[e] += dt * spd * (GAIT[d.id] || 5);
+        // gait phase follows distance travelled (cannon wheels roll: distance / wheel radius)
+        this.phase[e] += dt * spd * (d.id === "falconet" ? 1 / 0.33 : GAIT[d.id] || 5);
         this.mv[e] += (Math.min(1, spd / Math.max(0.5, d.speed)) - this.mv[e]) * Math.min(1, dt * 8);
-        const tint = st.hitT[e] < 0.12 ? 1.6 : 1;
+        let tint = st.hitT[e] < 0.12 ? 1.6 : 1;
+        const arr = this.arrivedAt.get(e);
+        if (arr !== undefined) { const k = (this.time - arr) / 1.2; if (k >= 1) this.arrivedAt.delete(e); else tint = Math.max(tint, 1 + 1.1 * (1 - k)); }
+        // animation clip from the simulation state (work, combat, carrying)
+        const fc = this.forceClip && this.forceClip.get(e); // debug/gallery override
+        let since = this.time - this.lastShot[e];
+        if (fc && fc.period) since = (this.time + (e % 5) * 0.2) % fc.period;
+        const clip = fc ? fc.clip : d.id === "deer" ? CLIP.IDLE : chooseClip(st, e, d, S, GT, { moving: this.mv[e] > 0.35 && spd > 0.15, sinceShot: since, shotKind: this.shotKind[e] ? "melee" : "ranged" });
+        if (clip !== this.clip[e]) { this.clip[e] = clip; this.clipT[e] = 0; } else this.clipT[e] += dt;
+        const timed = clip === CLIP.AIM || clip === CLIP.THRUST || clip === CLIP.SLASH || clip === CLIP.FIRE || clip === CLIP.THROW;
+        let ct = timed ? since : this.clipT[e] + (e % 7) * 0.31;
+        const sync = !fc && WORK_SYNC[clip];
+        if (sync) { // phase-lock the swing to the sim's harvest pulse: the strike lands on the pulse
+          const ph = Math.min(1, (st.pulse[e] + alpha * TICK) / HARVEST_PULSE);
+          ct = (((ph - 1 + sync[0]) % 1) + 1) % 1 * sync[1];
+        }
+        const code = KIND_OF[d.id] * 32 + clip;
+        const tilts = d.id === "hussar" || d.id === "falconet" || d.id === "deer" || d.id === "wolf";
+        let pitch = 0, roll = 0;
+        if (tilts) {
+          const hx = (g.heightAt(x + 0.35, z) - g.heightAt(x - 0.35, z)) / 0.7, hz = (g.heightAt(x, z + 0.35) - g.heightAt(x, z - 0.35)) / 0.7;
+          pitch = -Math.atan(hx * Math.sin(rot) + hz * Math.cos(rot)); roll = Math.atan(hx * Math.cos(rot) - hz * Math.sin(rot));
+        }
         if (d.id === "deer") {
           if (st.dead[e]) {
             this.te.set(0, rot, Math.PI / 2); this.tq.setFromEuler(this.te); this.tm.compose(this.tv.set(x, y + 0.13, z), this.tq, this.ts.set(1, 1, 1));
             this.deerPool.pushMatrix(this.tm, 0.85, 0.75, 0.7);
-          } else { const k = this.deerPool.push(x, y, z, rot, 1); this.deerPool.setAnim(k, this.phase[e], this.mv[e], 0); }
+          } else { const k = this.deerPool.pushTilt(x, y, z, rot, pitch, roll); this.deerPool.setAnim(k, code, ct, this.mv[e], this.phase[e]); }
           if (this.selection.has(e)) this.ring(x, y, z, d.radius * 2.2, 2);
           continue;
         }
-        const far = camPos.distanceTo(this.tv.set(x, y, z)) > LOD_DIST;
-        const pool = this.unitPools[d.id][far ? 1 : 0];
-        const tc = this.teamRGB[o];
-        const k = pool.push(x, y, z, rot, 1, tc[0] * tint, tc[1] * tint, tc[2] * tint);
-        let act = st.act[e];
-        const s = st.state[e];
-        if ((s === S.GATHER || s === S.BUILD) && !st.moving[e] && st.act[e] > 0) act = Math.abs(Math.sin(this.time * (s === S.BUILD ? 7 : 5.5) + e));
-        pool.setAnim(k, this.phase[e], this.mv[e], act);
+        const dist = camPos.distanceTo(this.tv.set(x, y, z));
+        // close enough for a rigged model? (sim state → Idle / Walk / Attack; the animator cross-fades)
+        const actor = !fc && this.actors.supports(d.id) && this.actors.draw(e, d.id, o, {
+          x, y, z, rot, dist, gen: st.gen[e], speed: spd, shot: this.lastShot[e], melee: this.shotKind[e] === 1,
+          state: clip === CLIP.AIM || clip === CLIP.FIRE || clip === CLIP.THRUST || clip === CLIP.SLASH ? STATE.ATTACK : this.mv[e] > 0.35 && spd > 0.15 ? STATE.WALK : STATE.IDLE,
+        });
+        if (!actor) {
+          const pool = this.unitPools[d.id][dist > LOD_DIST ? 1 : 0];
+          const tc = this.teamRGB[o];
+          const k = tilts ? pool.pushTilt(x, y, z, rot, pitch, roll, tc[0] * tint, tc[1] * tint, tc[2] * tint) : pool.push(x, y, z, rot, 1, tc[0] * tint, tc[1] * tint, tc[2] * tint);
+          pool.setAnim(k, code, ct, this.mv[e], this.phase[e]);
+        }
+        if (this.boxPreview && this.boxPreview.has(e) && !this.selection.has(e)) this.ring(x, y, z, d.radius * 1.55 + 0.12, 0, true);
         if (this.selection.has(e) || this.hover === e) this.ring(x, y, z, d.radius * 1.55 + 0.12, o === me ? 0 : 1, this.hover === e && !this.selection.has(e));
         if (this.selection.has(e) || (st.hp[e] < st.maxHp[e] && st.hitT[e] < 6)) hpBars.push([x, y + UNIT_H[d.id], z, st.hp[e] / st.maxHp[e], 0.9, o]);
         continue;
@@ -304,10 +454,20 @@ export class View {
       this.sph.set(this.tv.set(x, y + 1.5, z), d.size * 0.9 + 1.5);
       if (!this.frustum.intersectsSphere(this.sph)) continue;
       const tc = this.teamRGB[o], prog = st.prog[e];
-      const sy = prog < 1 ? Math.max(0.04, Math.pow(prog, 0.8)) : 1;
       const tint = st.hitT[e] < 0.12 ? 1.4 : 1;
-      this.bldPools[d.id].push(x, y, z, 0, 1, tc[0] * tint, tc[1] * tint, tc[2] * tint, sy);
-      if (prog < 1) this.scaffold[d.size].push(x, y, z, 0, 1);
+      // construction: the real mesh is revealed bottom-up to progress × height (shader cut);
+      // the unbuilt remainder is a hologram; at 100% the cut is disabled and the mesh is whole
+      const bp = this.bldPools[d.id], H = bp.height + 0.05;
+      const shown = prog < 1 ? 0.04 + 0.96 * prog : 1;
+      let flash = 0;
+      const bt = this.builtAt.get(e);
+      if (bt !== undefined) { flash = Math.max(0, 1 - (this.time - bt) / 0.9); if (flash <= 0) this.builtAt.delete(e); }
+      bp.setExtra(bp.push(x, y, z, 0, 1, tc[0] * tint, tc[1] * tint, tc[2] * tint), shown, H, flash);
+      if (prog < 1) {
+        const hp = this.holoPools[d.id];
+        hp.setExtra(hp.push(x, y, z, 0, 1, 1, 1, 1), shown, H, 0);
+        this.scaffold[d.size].push(x, y, z, 0, 1);
+      }
       if (d.id === "mill" && prog >= 1) {
         this.te.set(0, 0, this.time * 1.1 + e); this.tq.setFromEuler(this.te);
         this.tm.compose(this.tv.set(x, y + 2.05, z + 0.82), this.tq, this.ts.set(1, 1, 1)); this.blades.pushMatrix(this.tm);
@@ -334,33 +494,92 @@ export class View {
     for (let i = this.corpses.length - 1; i >= 0; i--) {
       const c = this.corpses[i]; c.t += dt;
       if (c.t > 14) { this.corpses.splice(i, 1); continue; }
-      const fall = Math.min(1, c.t / 0.45), sink = c.t > 9 ? (c.t - 9) * 0.12 : 0;
-      const y = g.heightAt(c.x, c.z) + 0.12 * fall - sink - (c.def === "hussar" ? 0 : 0);
+      const sink = c.t > 9 ? (c.t - 9) * 0.12 : 0;
+      if (c.mat) { // a ragdoll that came to rest: keep its exact final pose
+        this.tm.copy(c.mat); this.tm.elements[13] -= sink;
+        const tc = this.teamRGB[c.owner], dark = 0.75, pool = this.unitPools[c.def][0];
+        pool.setAnim(pool.pushMatrix(this.tm, tc[0] * dark, tc[1] * dark, tc[2] * dark), c.code, c.ct, 0, 0);
+        continue;
+      }
+      const fall = Math.min(1, c.t / 0.45);
+      const y = g.heightAt(c.x, c.z) + 0.12 * fall - sink;
       this.te.set(0, c.rot, c.side * Math.PI / 2 * fall * (c.def === "falconet" ? 0.25 : 1)); this.tq.setFromEuler(this.te);
       this.tm.compose(this.tv.set(c.x, y, c.z), this.tq, this.ts.set(1, 1, 1));
       if (c.def === "deer") continue;
       const tc = this.teamRGB[c.owner], dark = 0.75;
       this.unitPools[c.def][0].pushMatrix(this.tm, tc[0] * dark, tc[1] * dark, tc[2] * dark);
     }
-    // rubble
+    // ragdolls (blast victims): mesh follows the rigid body, vertex shader flails the limbs
+    const finished = this.phys.step(dt);
+    for (const r of this.ragdolls) {
+      if (!this.unitPools[r.def]) continue;
+      this.phys.ragdollMatrix(r, this.tm);
+      const tc = this.teamRGB[r.owner], pool = this.unitPools[r.def][0];
+      pool.setAnim(pool.pushMatrix(this.tm, tc[0], tc[1], tc[2]), KIND_OF[r.def] * 32 + CLIP.FLAIL, r.t, 0, 0);
+    }
+    for (const r of finished) {
+      this.ragdolls.splice(this.ragdolls.indexOf(r), 1);
+      if (this.unitPools[r.def]) this.corpses.push({ def: r.def, owner: r.owner, t: 2.5, mat: this.phys.ragdollMatrix(r, new THREE.Matrix4()), code: KIND_OF[r.def] * 32 + CLIP.FLAIL, ct: r.t, x: r.body.position.x, z: r.body.position.z });
+    }
+    // rubble: rises out of the ground as the debris settles; smoke columns, then embers
     for (let i = this.rubble.length - 1; i >= 0; i--) {
       const r = this.rubble[i]; r.t += dt;
       if (!r.keep && r.t > 60) { this.rubble.splice(i, 1); continue; }
-      const y = this.footY(r.x, r.z, r.size);
-      this.rubblePool[r.size].push(r.x, y, r.z, r.x, 1);
+      const y = this.footY(r.x, r.z, r.size), rise = r.smoke ? Math.min(1, r.t / 1.6) : 1;
+      this.rubblePool[r.size].push(r.x, y - (1 - rise) * 0.7, r.z, r.x, 1);
+      if (r.smoke && r.t < r.smoke && Math.random() < dt * 14) this.fx.plume(r.x + (Math.random() - 0.5) * r.size * 0.7, y + 0.4, r.z + (Math.random() - 0.5) * r.size * 0.7, r.size);
       if (r.t < 8 && Math.random() < dt * 6) this.fx.fire(r.x + (Math.random() - 0.5) * r.size * 0.6, y + 0.3, r.z + (Math.random() - 0.5) * r.size * 0.6);
     }
     // cannonballs
     for (const p of sim.projectiles) {
-      const t = Math.min(1, (p.t + alpha * 0.05) / p.T);
-      const x = lerp(p.x, p.tx, t), z = lerp(p.z, p.tz, t);
-      const y = lerp(g.heightAt(p.x, p.z) + 0.6, g.heightAt(p.tx, p.tz) + 0.2, t) + Math.sin(t * Math.PI) * (1 + p.T * 2);
-      if (this.seen(x, z)) this.balls.push(x, y, z, 0, 1, 0.15, 0.15, 0.15);
+      // the sim's own parabola, sampled between ticks (sim/ballistics.js)
+      const tt = Math.min(p.T, p.t + alpha * TICK), gr = p.kind === 1;
+      const [x, y, z] = ballisticAt(p, tt, this.bp);
+      if (this.seen(x, z)) {
+        this.balls.push(x, y, z, tt * 9, gr ? 0.62 : 1, 0.15, 0.15, 0.15);
+        if (!gr && Math.random() < dt * 40) this.fx.trail(x, y, z);
+        if (gr && Math.random() < dt * 30) this.fx.fuse(x, y + 0.08, z);
+      }
     }
+    // treasures (static chests; aura brighter + sparkles once the guardians are down)
+    this.chestPool.begin(); this.auraPool.begin();
+    const exp = g.exp[me];
+    for (const [t, rec] of sim.treasures) {
+      if (!st.alive[t]) continue;
+      const x = st.x[t], z = st.z[t], i = Math.floor(x), j = Math.floor(z);
+      if (!reveal && !exp[j * W + i]) continue;
+      const y = g.heightAt(x, z), rw = rec.reward, c = AURA[rw.res != null ? rw.res : rw.xp ? 3 : 4];
+      let guarded = false; for (const q of rec.guards) if (st.alive[q] && st.hp[q] > 0) { guarded = true; break; }
+      this.chestPool.push(x, y, z, (x * 3.1 + z) % 6.28, 1);
+      const k = guarded ? 0.5 : 1.25;
+      this.auraPool.push(x, y + 0.05, z, this.time * 0.2, guarded ? 2.6 : 3.2, c[0] * k, c[1] * k, c[2] * k);
+      if (!guarded && Math.random() < dt * 5 && this.dist2(x, z) < 1600) this.fx.sparkle(x + (Math.random() - 0.5) * 0.6, y + 0.4, z + (Math.random() - 0.5) * 0.6, c[0], c[1], c[2]);
+      if ((this.selection.has(t) || this.hover === t)) this.ring(x, y, z, 1.1, 2, this.hover === t && !this.selection.has(t));
+    }
+    this.chestPool.end(); this.auraPool.end();
+    // shipment crates: fall from the sky, bounce, shrink as villagers unpack them
+    for (const p of this.cratePools) p.begin();
+    for (const [e, t0] of this.crates) {
+      if (!st.alive[e] || !DEF_LIST[st.def[e]].crate) { this.crates.delete(e); continue; }
+      const x = st.x[e], z = st.z[e];
+      if (st.owner[e] !== me && !this.seen(x, z)) continue;
+      const t = this.time - t0, y0 = g.heightAt(x, z);
+      if (t < 0) continue;
+      const fall = t < 0.55 ? 7 * (1 - (t / 0.55) ** 2) : 0.28 * Math.abs(Math.sin((t - 0.55) * 9)) * Math.exp(-(t - 0.55) * 5);
+      if (t >= 0.55 && t - dt < 0.55 && this.dist2(x, z) < 1600) this.fx.dust(x, y0, z, 0.4, 5);
+      const sc = 0.55 + 0.45 * Math.min(1, st.amount[e] / 100);
+      this.cratePools[DEF_LIST[st.def[e]].res].push(x, y0 + fall, z, (x * 7.13 + z * 3.7) % 6.28, sc);
+    }
+    for (const p of this.cratePools) p.end();
+    // shipment on its way: emblem + progress ring over the receiving Town Center
+    const pme = sim.players[me];
+    if (pme.ship && pme.tc >= 0 && st.alive[pme.tc]) this.shipfx.transit(st.x[pme.tc], this.footY(st.x[pme.tc], st.z[pme.tc], 5), st.z[pme.tc], pme.ship.t / pme.ship.total, this.camera.quaternion);
+    else this.shipfx.transit(0, 0, 0, null);
     // markers
     for (let i = this.markers.length - 1; i >= 0; i--) {
       const mk = this.markers[i]; mk.t += dt;
       if (mk.t > 0.6) { this.markers.splice(i, 1); continue; }
+      if (mk.kind === "blast") { const k = mk.t / 0.6; this.rings.push(mk.x, g.heightAt(mk.x, mk.z) + 0.1, mk.z, 0, mk.r * (0.5 + k * 1.1), 1.0 * (1 - k), 0.55 * (1 - k), 0.2 * (1 - k)); continue; }
       const s = 1.1 - mk.t * 1.2;
       const c = mk.kind === "attack" ? [1, 0.3, 0.25] : mk.kind === "gather" ? [1, 0.85, 0.35] : [0.5, 1, 0.6];
       this.rings.push(mk.x, g.heightAt(mk.x, mk.z) + 0.08, mk.z, 0, Math.max(0.15, s), c[0], c[1], c[2]);
@@ -381,11 +600,14 @@ export class View {
 
     for (const k in this.unitPools) { this.unitPools[k][0].end(); this.unitPools[k][1].end(); }
     this.deerPool.end();
-    for (const k in this.bldPools) this.bldPools[k].end();
+    this.actors.end(dt);
+    for (const k in this.bldPools) { this.bldPools[k].end(); this.holoPools[k].end(); }
     for (const k in this.scaffold) { this.scaffold[k].end(); this.rubblePool[k].end(); }
     this.blades.end(); this.rings.end(); this.bars.end(); this.balls.end();
     if (this.staticDirtyStumps) { this.rebuildStatics(); this.staticDirtyStumps = false; }
     this.fx.update(dt);
+    this.floaters.update(dt);
+    this.shipfx.update(dt);
     this.r.render(this.scene, this.camera);
     this.stats.calls = this.r.info.render.calls; this.stats.tris = this.r.info.render.triangles;
   }
@@ -421,19 +643,24 @@ export class View {
       if ((st.mask[e] & CM.BUILDING) && st.owner[e] !== me && !this.fog.reveal && !(this.known[e] && this.knownGen[e] === st.gen[e])) continue;
       if (!g.exp[me][(j + dj) * W + i + di] && !this.fog.reveal) continue;
       if (di === 0 && dj === 0) return { e, gp };
-      if (st.mask[e] & CM.RESOURCE) return { e, gp };
+      if (st.mask[e] & (CM.RESOURCE | CM.TREASURE)) return { e, gp };
     }
     return { e: -1, gp };
   }
-  // Own units inside a screen rectangle.
+  // Marquee selection: own units whose projected screen box (feet → head, body width) overlaps the
+  // dragged rectangle. Interpolated positions are used so the box matches what is on screen.
   boxSelect(x0, y0, x1, y1, w, h) {
     const st = this.sim.st, g = this.sim.grid, out = [];
     for (let e = 0; e < st.top; e++) {
       if (!st.alive[e] || st.owner[e] !== this.me || !(st.mask[e] & CM.UNIT)) continue;
-      const d = DEF_LIST[st.def[e]];
-      const [px, py, pz] = this.cam.project(st.x[e], g.heightAt(st.x[e], st.z[e]) + (UNIT_H[d.id] || 1) * 0.5, st.z[e], w, h);
-      if (pz < 1 && px >= x0 && px <= x1 && py >= y0 && py <= y1) out.push(e);
+      const d = DEF_LIST[st.def[e]], x = st.x[e], z = st.z[e], y = g.heightAt(x, z);
+      const [fx, fy, fz] = this.cam.project(x, y, z, w, h);
+      if (fz >= 1) continue;
+      const [, hy] = this.cam.project(x, y + (UNIT_H[d.id] || 1.2), z, w, h);
+      const half = Math.max(4, (fy - hy) * (d.radius > 0.5 ? 0.55 : 0.32));
+      if (fx + half >= x0 && fx - half <= x1 && fy >= y0 && hy <= y1) out.push(e);
     }
+    // a box that catches soldiers and villagers keeps the soldiers (hold Shift to keep both)
     return out;
   }
   onScreen(e, w, h) {
@@ -442,7 +669,10 @@ export class View {
   }
 
   dispose() {
+    this.cam.detach();
+    this.actors.dispose(); // shared model geometry belongs to the AssetManager: detach before the traversal below
     this.scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); }); } });
+    this.floaters.dispose(); this.bldDepth.dispose(); this.shipfx.dispose(); this.phys.dispose();
     this.env.dispose(); this.fog.tex.dispose(); this.buildGrid.tex.dispose(); this.tint.dispose();
   }
 }
