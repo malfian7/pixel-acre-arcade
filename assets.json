@@ -14,15 +14,15 @@
   "use": "webp"
  },
  "img/thumb-farm.jpg": {
-  "bytes": 144897,
+  "bytes": 197230,
   "variants": {
    "webp": {
     "url": "img/opt/thumb-farm.webp",
-    "bytes": 30544
+    "bytes": 41192
    },
    "ktx2": {
     "url": "img/opt/thumb-farm.ktx2",
-    "bytes": 57713
+    "bytes": 64127
    }
   },
   "use": "webp"
@@ -56,15 +56,15 @@
   "use": "webp"
  },
  "img/thumb-rooftop.jpg": {
-  "bytes": 72292,
+  "bytes": 77389,
   "variants": {
    "webp": {
     "url": "img/opt/thumb-rooftop.webp",
-    "bytes": 13254
+    "bytes": 14200
    },
    "ktx2": {
     "url": "img/opt/thumb-rooftop.ktx2",
-    "bytes": 45310
+    "bytes": 49116
    }
   },
   "use": "webp"
@@ -94,7 +94,7 @@
   "use": "plain"
  },
  "world.js": {
-  "bytes": 60048,
+  "bytes": 62718,
   "use": "plain"
  }
 }
