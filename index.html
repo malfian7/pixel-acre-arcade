@@ -56,8 +56,9 @@ body.flat #world, body.flat .hud { display: none; }
 .loader h1 span { color: var(--marigold); }
 .loader .sub { margin: 0; font: 400 13px/1.2 var(--font-pixel); color: var(--mist-dim); letter-spacing: .16em; text-transform: uppercase; }
 .meter { width: min(260px, 70vw); height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 10px; }
-.meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--sprout), var(--marigold)); transform-origin: left; transform: scaleX(0); transition: transform .3s linear; }
-.status { font: 400 12px/1 var(--font-pixel); color: var(--mist-dim); min-height: 14px; }
+.meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--sprout), var(--marigold)); transform-origin: left; transform: scaleX(0); transition: transform .15s linear; }
+.status { font: 400 12px/1 var(--font-pixel); color: var(--mist-dim); min-height: 14px; display: flex; gap: 8px; align-items: baseline; justify-content: center; }
+.status b { font-weight: 400; color: var(--marigold); min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 .start { display: grid; justify-items: center; gap: 12px; margin-top: 10px; opacity: 0; transform: translateY(8px); transition: opacity .4s var(--ease-out), transform .4s var(--ease-out); pointer-events: none; }
 .loader.ready .start { opacity: 1; transform: none; pointer-events: auto; }
 .loader.ready .meter, .loader.ready .status { display: none; }
@@ -227,8 +228,8 @@ body.flat .top { position: fixed; background: color-mix(in srgb, var(--night) 90
     <svg class="mark" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true"><rect width="16" height="16" rx="3" fill="#2a2147"/><rect x="2" y="11" width="12" height="3" fill="#94704c"/><rect x="2" y="11" width="12" height="1" fill="#7f5e3f"/><rect x="7" y="6" width="2" height="5" fill="#86d9a6"/><rect x="3" y="4" width="4" height="2" fill="#86d9a6"/><rect x="5" y="6" width="2" height="1" fill="#86d9a6"/><rect x="9" y="3" width="4" height="2" fill="#86d9a6"/><rect x="9" y="5" width="2" height="1" fill="#86d9a6"/><rect x="11" y="1" width="2" height="2" fill="#f4a63a"/></svg>
     <h1 id="ldTitle">Pixel Acre <span>Arcade</span></h1>
     <p class="sub">Valley Line · free 3D games</p>
-    <div class="meter" aria-hidden="true"><i id="ldBar"></i></div>
-    <div class="status" id="ldStatus" role="status">Warming up the engine…</div>
+    <div class="meter" id="ldMeter" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="ldBar"></i></div>
+    <div class="status" id="ldStatus"><b id="ldPct">0%</b> <span id="ldStage">Downloading the engine</span></div>
     <div class="start">
       <button class="btn" id="goSound">Start the ride <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l7 5-7 5z" fill="currentColor"/></svg></button>
       <button class="link-btn" id="goQuiet">Ride without sound</button>
@@ -279,5 +280,51 @@ body.flat .top { position: fixed; background: color-mix(in srgb, var(--night) 90
   <div class="fgrid" id="fgrid"></div>
 </main>
 
-<script type="module" src="world.js"></script>
+<script>
+// Loader bootstrap (classic script, runs before any module): one 0–100 % bar for the whole hub.
+// Every part has a weight ≈ the bytes it costs; pct = Σ weight·done / Σ weight and never goes back.
+// The biggest file, three.js, is streamed here with byte-level progress and handed to the modules
+// through an import map pointing at the downloaded copy — no second request.
+(() => {
+  const $ = (id) => document.getElementById(id), parts = new Map();
+  let shown = 0, label = "Downloading the engine";
+  const t0 = performance.now(), log = [];
+  const emit = () => {
+    let w = 0, d = 0; for (const p of parts.values()) { w += p.w; d += p.w * p.f; }
+    const v = Math.max(shown, w ? d / w : 0); shown = v;
+    const pct = Math.round(v * 100);
+    $("ldBar").style.transform = `scaleX(${v})`; $("ldPct").textContent = pct + "%"; $("ldStage").textContent = label;
+    $("ldMeter").setAttribute("aria-valuenow", pct);
+    if (!log.length || log[log.length - 1][1] !== pct) log.push([Math.round(performance.now() - t0), pct, label]);
+  };
+  const add = (key, weight, lab = key) => {
+    const p = parts.get(key) || { w: weight, f: 0 }; p.w = weight; parts.set(key, p);
+    const api = { set: (f) => { p.f = Math.max(p.f, Math.min(1, f)); label = lab; emit(); }, done: () => { p.f = 1; label = lab; emit(); }, fail: () => { p.f = 1; emit(); }, reweigh: (x) => { p.w = x; emit(); } };
+    emit(); return api;
+  };
+  window.__paLoad = { add, remove: (key) => { parts.delete(key); emit(); }, get value() { return shown; }, log: () => log.slice() };
+  // the whole plan is registered up front, so the percentage has its full denominator from 0 %
+  // (weights ≈ bytes on the wire, or the equivalent time for CPU/GPU work)
+  for (const [k, w, l] of [["world.js", 20e3, "Starting the engine"], ["build", 90e3, "Building the valley"], ["fonts", 30e3, "Painting the road signs"],
+    ["thumbs", 110e3, "Loading the billboards"], ["stage:Warming up shaders", 90e3, "Warming up shaders"]]) parts.set(k, { w, f: 0, l });
+  const THREE_URL = "lib/three.module.min.js", THREE_BYTES = 687458; // decoded size (the server may gzip)
+  const engine = add("three", 170e3, "Downloading the engine");
+  const boot = (threeUrl) => {
+    const map = document.createElement("script"); map.type = "importmap";
+    map.textContent = JSON.stringify({ imports: { three: threeUrl, "three/addons/": new URL("lib/addons/", location.href).href } });
+    document.head.appendChild(map);
+    const s = document.createElement("script"); s.type = "module"; s.src = "world.js"; document.body.appendChild(s);
+  };
+  (async () => {
+    try {
+      const res = await fetch(THREE_URL);
+      if (!res.ok || !res.body) throw new Error(res.status);
+      const reader = res.body.getReader(), chunks = []; let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; engine.set(got / THREE_BYTES * 0.98); }
+      engine.done();
+      boot(URL.createObjectURL(new Blob(chunks, { type: "text/javascript" })));
+    } catch { engine.done(); boot(new URL(THREE_URL, location.href).href); } // stream unavailable: plain module load
+  })();
+})();
+</script>
 </body></html>

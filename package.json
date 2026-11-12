@@ -1,0 +1,16 @@
+{
+  "name": "pixel-acre-arcade",
+  "private": true,
+  "type": "module",
+  "description": "Pixel Acre Arcade — static site. Nothing here is needed to run it; these are build tools.",
+  "scripts": {
+    "compress": "node tools/compress-assets.mjs"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.2.0",
+    "@gltf-transform/extensions": "^4.2.0",
+    "@gltf-transform/functions": "^4.2.0",
+    "draco3dgltf": "^1.5.7",
+    "sharp": "^0.33.5"
+  }
+}

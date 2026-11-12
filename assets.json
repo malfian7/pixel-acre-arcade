@@ -1,0 +1,100 @@
+{
+ "img/thumb-canyon.jpg": {
+  "bytes": 54765,
+  "variants": {
+   "webp": {
+    "url": "img/opt/thumb-canyon.webp",
+    "bytes": 9030
+   },
+   "ktx2": {
+    "url": "img/opt/thumb-canyon.ktx2",
+    "bytes": 40716
+   }
+  },
+  "use": "webp"
+ },
+ "img/thumb-farm.jpg": {
+  "bytes": 144897,
+  "variants": {
+   "webp": {
+    "url": "img/opt/thumb-farm.webp",
+    "bytes": 30544
+   },
+   "ktx2": {
+    "url": "img/opt/thumb-farm.ktx2",
+    "bytes": 57713
+   }
+  },
+  "use": "webp"
+ },
+ "img/thumb-frontier.jpg": {
+  "bytes": 191189,
+  "variants": {
+   "webp": {
+    "url": "img/opt/thumb-frontier.webp",
+    "bytes": 37864
+   },
+   "ktx2": {
+    "url": "img/opt/thumb-frontier.ktx2",
+    "bytes": 64160
+   }
+  },
+  "use": "webp"
+ },
+ "img/thumb-ironrift.jpg": {
+  "bytes": 129464,
+  "variants": {
+   "webp": {
+    "url": "img/opt/thumb-ironrift.webp",
+    "bytes": 21026
+   },
+   "ktx2": {
+    "url": "img/opt/thumb-ironrift.ktx2",
+    "bytes": 59907
+   }
+  },
+  "use": "webp"
+ },
+ "img/thumb-rooftop.jpg": {
+  "bytes": 72292,
+  "variants": {
+   "webp": {
+    "url": "img/opt/thumb-rooftop.webp",
+    "bytes": 13254
+   },
+   "ktx2": {
+    "url": "img/opt/thumb-rooftop.ktx2",
+    "bytes": 45310
+   }
+  },
+  "use": "webp"
+ },
+ "games/frontier/models/musketeer.glb": {
+  "bytes": 121628,
+  "variants": {
+   "draco": {
+    "url": "games/frontier/models/musketeer.draco.glb",
+    "bytes": 17392
+   }
+  },
+  "use": "plain"
+ },
+ "games/frontier/models/pikeman.glb": {
+  "bytes": 127852,
+  "variants": {
+   "draco": {
+    "url": "games/frontier/models/pikeman.draco.glb",
+    "bytes": 17264
+   }
+  },
+  "use": "plain"
+ },
+ "lib/three.module.min.js": {
+  "bytes": 687458,
+  "use": "plain"
+ },
+ "world.js": {
+  "bytes": 60048,
+  "use": "plain"
+ }
+}

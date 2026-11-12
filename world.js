@@ -1,6 +1,15 @@
 // Pixel Acre Arcade — the Valley Line.
 // A cab drives along one road through the valley and stops at each game.
-import * as THREE from "./lib/three.module.min.js";
+import * as THREE from "three"; // mapped by the loader in index.html (streamed with byte progress)
+import { AssetPipeline, LoadProgress, loadManifest } from "./games/asset-pipeline.js";
+import { cleanerFor } from "./games/scene-cleaner.js";
+
+// Loading: index.html's bootstrap already counts the engine download; this module adds its own parts
+// (world build, billboards, fonts, shader warm-up) to the same 0–100 % bar.
+const LOAD = window.__paLoad || new LoadProgress((pct, label) => { const b = document.getElementById("ldBar"); if (b) b.style.transform = `scaleX(${pct / 100})`; });
+performance.mark("hub:module");
+const partWorld = LOAD.add("world.js", 20e3, "Starting the engine"); partWorld.done();
+const manifestP = loadManifest("assets.json");
 
 const $ = (id) => document.getElementById(id);
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -71,8 +80,14 @@ const canvas = $("world");
 let renderer = null;
 try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); } catch { renderer = null; }
 const MOBILE = matchMedia("(max-width: 760px)").matches;
-// Draw sign textures with the real fonts: wait (briefly) for them before building the world.
-if (document.fonts) await Promise.race([Promise.all([document.fonts.load("64px 'Dela Gothic One'"), document.fonts.load("64px DotGothic16")]).catch(() => {}), new Promise((r) => setTimeout(r, 1800))]);
+// Sign textures are drawn now with whatever font is available and redrawn when the web fonts
+// arrive — the world no longer waits up to 1.8 s for fonts before it starts building.
+const partFonts = LOAD.add("fonts", 30e3, "Painting the road signs");
+const fontsReady = document.fonts
+  ? Promise.race([Promise.all([document.fonts.load("64px 'Dela Gothic One'"), document.fonts.load("64px DotGothic16")]).catch(() => {}), new Promise((r) => setTimeout(r, 1800))])
+  : Promise.resolve();
+fontsReady.then(() => partFonts.done());
+const partBuild = LOAD.add("build", 90e3, "Building the valley");
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x9fd3ff, 60, 200);
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 600);
@@ -97,13 +112,19 @@ const geo = (k, f) => { if (!G.has(k)) G.set(k, f()); return G.get(k); };
 function add(g, m, x = 0, y = 0, z = 0, p = scene, shadow = true) { const o = new THREE.Mesh(g, m); o.position.set(x, y, z); o.castShadow = shadow; o.receiveShadow = true; p.add(o); return o; }
 const box = (w, h, d, c, x, y, z, p, o) => add(geo(`b${w},${h},${d}`, () => new THREE.BoxGeometry(w, h, d)), mat(c, o), x, y, z, p);
 const tex = (cv) => { const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+const signs = []; // [texture, redraw] — repainted once the web fonts have loaded
 function textTex(text, { w = 512, h = 128, bg = "#2a2147", fg = "#f4a63a", size = 64, font = "'Dela Gothic One', 'Arial Black', sans-serif", border = null } = {}) {
   const c = document.createElement("canvas"); c.width = w; c.height = h; const g = c.getContext("2d");
-  if (bg) { g.fillStyle = bg; g.fillRect(0, 0, w, h); }
-  if (border) { g.strokeStyle = border; g.lineWidth = 8; g.strokeRect(4, 4, w - 8, h - 8); }
-  g.fillStyle = fg; g.font = `${size}px ${font}`; g.textAlign = "center"; g.textBaseline = "middle";
-  let s = size; while (g.measureText(text).width > w - 40 && s > 12) { s -= 2; g.font = `${s}px ${font}`; }
-  g.fillText(text, w / 2, h / 2 + 3); return tex(c);
+  const draw = () => {
+    g.clearRect(0, 0, w, h);
+    if (bg) { g.fillStyle = bg; g.fillRect(0, 0, w, h); }
+    if (border) { g.strokeStyle = border; g.lineWidth = 8; g.strokeRect(4, 4, w - 8, h - 8); }
+    g.fillStyle = fg; g.font = `${size}px ${font}`; g.textAlign = "center"; g.textBaseline = "middle";
+    let s = size; while (g.measureText(text).width > w - 40 && s > 12) { s -= 2; g.font = `${s}px ${font}`; }
+    g.fillText(text, w / 2, h / 2 + 3);
+  };
+  draw();
+  const t = tex(c); signs.push([t, draw]); return t;
 }
 // Places an object beside the road at arc length s, `side` metres to the right (negative = left).
 function beside(o, s, side, y = 0, faceRoad = true) {
@@ -351,9 +372,14 @@ const garageLight = new THREE.PointLight(0xffc27a, 0, 22, 1.2);
 }
 
 /* ================================================================ billboards & stop posts */
-const loader = new THREE.TextureLoader();
-let pendingTex = 0, loadedTex = 0;
+// billboard screenshots: AssetPipeline streams them with byte progress and loads the variant named in
+// assets.json (a WebP sized for the billboard; KTX2 with ?assets=ktx2), decoded off the main thread
+const pipe = new AssetPipeline(THREE, renderer, { progress: LOAD, manifest: await manifestP });
+pipe.expect(STOPS.filter((st) => st.thumb).map((st) => st.thumb));
+if (LOAD.remove) LOAD.remove("thumbs"); // the planned placeholder, now replaced by one part per file (exact bytes)
+const texLoads = [];
 const screenMats = [];
+const placeholder = new THREE.DataTexture(new Uint8Array([42, 33, 71, 255]), 1, 1); placeholder.colorSpace = THREE.SRGBColorSpace; placeholder.needsUpdate = true;
 STOPS.forEach((st, i) => {
   // stop post at the road edge
   const post = new THREE.Group(); beside(post, st.s + 3, -5.4); scene.add(post);
@@ -364,9 +390,10 @@ STOPS.forEach((st, i) => {
   const g = new THREE.Group(); beside(g, st.s + 5, 9.5); scene.add(g);
   for (const x of [-2.6, 2.6]) add(geo("bbpost", () => new THREE.CylinderGeometry(0.16, 0.2, 4.2, 8)), mat("#3a2f5e"), x, 2.1, -0.15, g);
   box(7.0, 4.7, 0.3, "#2a2147", 0, 5.9, -0.2, g);
-  const sm = new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false });
-  pendingTex++;
-  loader.load(st.thumb, (t) => { t.colorSpace = THREE.SRGBColorSpace; sm.map = t; sm.needsUpdate = true; loadedTex++; progress(); }, undefined, () => { loadedTex++; progress(); });
+  // placeholder map from the start: the shader variant (USE_MAP) is the final one, so it can be
+  // compiled while the screenshots download, and swapping in the real texture needs no recompile
+  const sm = new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, map: placeholder });
+  texLoads.push(pipe.texture(st.thumb).then((t) => { sm.map = t; sm.needsUpdate = true; }).catch(() => {}));
   screenMats.push(sm);
   add(geo("screen", () => new THREE.PlaneGeometry(6.4, 4.0)), sm, 0, 5.9, -0.03, g, false);
   add(new THREE.PlaneGeometry(5.2, 0.95), new THREE.MeshBasicMaterial({ map: textTex(st.title.toUpperCase(), { w: 1024, h: 190, size: 96, bg: "#17122b", fg: "#f4a63a", border: "#f4a63a" }), toneMapped: false }), 0, 8.85, -0.05, g, false);
@@ -650,9 +677,15 @@ const camPos = new THREE.Vector3(), camLook = new THREE.Vector3(), tmpA = new TH
 let lastHeading = null, roll = 0, pitch = 0, snapCam = true, puffT = 0, t0 = performance.now(), visible = true, prevV = 0;
 document.addEventListener("visibilitychange", () => (visible = !document.hidden));
 const LANE = 1.9;
+let stopped = false, firstFrame = false;
 function tick(now) {
+  if (stopped) return;
   requestAnimationFrame(tick);
   if (!visible || flat || !renderer) return;
+  // no frames while the (nearly opaque) loader covers the screen: the main thread and GPU go to
+  // loading, and the shaders are compiled in parallel (compileAsync) instead of by a first frame
+  if (!isReady) return;
+  if (!firstFrame) { firstFrame = true; performance.mark("hub:frame0"); }
   const dt = clamp((now - t0) / 1000, 0, 0.05); t0 = now; const t = now / 1000;
   // drive
   if (!arrived) {
@@ -726,11 +759,6 @@ function tick(now) {
 let offX = 0, offY = 0;
 
 /* ================================================================ boot */
-function progress() {
-  const p = 0.5 + 0.5 * (pendingTex ? loadedTex / pendingTex : 1);
-  $("ldBar").style.transform = `scaleX(${p})`;
-  if (loadedTex >= pendingTex) setTimeout(ready, 250);
-}
 let isReady = false;
 function ready() {
   if (isReady) return; isReady = true;
@@ -746,11 +774,21 @@ $("goSound").onclick = () => begin(true);
 $("goQuiet").onclick = () => begin(false);
 $("soundBtn").querySelector(".lbl3").textContent = "Sound off";
 setFlat(flat);
+performance.mark("hub:built");
 if (renderer) {
-  $("ldBar").style.transform = "scaleX(.5)"; $("ldStatus").textContent = "Painting the road signs…";
-  const fontsReady = document.fonts ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))]) : Promise.resolve();
-  fontsReady.then(() => { progress(); if (!pendingTex) ready(); });
+  partBuild.done();
+  // GPU hygiene: everything this page uploaded is disposed when the player leaves for a game
+  // (pagehide), and a page restored from the back/forward cache reloads (games/scene-cleaner.js)
+  const cleaner = cleanerFor(renderer, { name: "hub" });
+  cleaner.track(...M.values(), ...G.values(), ...signs.map(([t]) => t));
+  cleaner.onLeave(() => { stopped = true; stopEngine(); });
+  cleaner.installPageLifecycle();
+  window.__paCleaner = cleaner;
+  fontsReady.then(() => { for (const [t, draw] of signs) { draw(); t.needsUpdate = true; } });
+  const compiled = pipe.compile(scene, camera); // parallel with the downloads (KHR_parallel_shader_compile)
+  Promise.all([Promise.all(texLoads).then(() => performance.mark("hub:assets")), fontsReady, compiled])
+    .then(() => { performance.mark("hub:ready"); ready(); });
   requestAnimationFrame(tick);
-}
+} else { partBuild.done(); }
 if (new URLSearchParams(location.search).has("autostart")) { ready(); begin(false); }
 window.__valley = { go, step, get s() { return s; }, get target() { return target; }, STOPS };
