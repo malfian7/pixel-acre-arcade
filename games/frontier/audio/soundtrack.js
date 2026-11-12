@@ -13,13 +13,17 @@
 import { audioContext, trackBus, music as proceduralMusic } from "./audio.js";
 
 const BASE = new URL("./music/", import.meta.url).href;
+// Each track tries its files in order: the game's own name first, then the names the tracks were
+// delivered with — so dropping the original files into audio/music/ works without renaming them.
 export const TRACKS = {
-  menu: { file: "main-menu.mp3", loop: true },
-  explore: { file: "early-exploration.mp3", loop: true },
-  age: { file: "age-2-3.mp3", loop: true },
-  war: { file: "war.mp3", loop: true },
-  victory: { file: "victory.mp3", loop: false, then: "menu" },
+  menu: { files: ["main-menu.mp3", "Main Menu.mp3"], loop: true },
+  explore: { files: ["early-exploration.mp3", "Early Exploration.mp3"], loop: true },
+  age: { files: ["age-2-3.mp3", "Age 2-3 or Newly upgrade Age.mp3", "Age 2-3.mp3"], loop: true },
+  war: { files: ["war.mp3", "War.mp3"], loop: true },
+  victory: { files: ["victory.mp3", "Finish or Victory Match.mp3", "Victory.mp3"], loop: false, then: "menu" },
 };
+for (const t of Object.values(TRACKS)) t.file = t.files[0];
+const urlOf = (f) => BASE + encodeURIComponent(f);
 const XFADE = 2.5;          // seconds, track → track
 const LOOP_XFADE = 3.0;     // seconds, end of a loop → its start
 // war heat: points from combat events, decaying each second
@@ -44,6 +48,7 @@ export class Soundtrack {
   constructor() {
     this.want = null; this.cur = null; this.voices = {}; this.active = null; this.failed = false; this.seq = 0;
     this.heat = 0; this.warSince = -1; this.peace = "explore"; this.inMatch = false;
+    this.status = "idle"; this.error = null; this.onFallback = null; // "playing" once a file plays; "fallback" = procedural tune
     this.timer = setInterval(() => this.tick(1), 1000);
     this.loopTimer = setInterval(() => this.loopWatch(), 200);
     // a hidden tab is silent: pause the stream, resume where it left off
@@ -61,17 +66,34 @@ export class Soundtrack {
   voice(name, slot) {
     const key = name + slot;
     if (!this.voices[key]) {
-      const v = new Voice(this.ac, this.bus, BASE + TRACKS[name].file);
-      v.el.addEventListener("error", () => this.fail(), { once: true });
+      const T = TRACKS[name], start = T.found ?? 0;
+      const v = new Voice(this.ac, this.bus, urlOf(T.files[start]));
+      v.tryIdx = start;
+      // a failed file → the next candidate name; the last one is retried once with a fresh URL
+      // (stale cache / interrupted download) before the built-in tune takes over
+      v.el.addEventListener("error", () => {
+        const code = v.el.error ? v.el.error.code : 0, tried = T.files[v.tryIdx];
+        console.warn(`[soundtrack] ${urlOf(tried)}: media error ${code}`);
+        if (v.tryIdx < T.files.length - 1) v.el.src = urlOf(T.files[++v.tryIdx]);
+        else if (!v.retried) { v.retried = true; v.tryIdx = start; v.el.src = urlOf(T.files[start]) + "?r=" + Date.now(); }
+        else return this.fail(`${T.files.join(" / ")} (media error ${code}: ${["", "aborted", "network", "decode", "not found / unsupported"][code] || "unknown"})`);
+        v.el.load();
+        if (this.cur === name && this.active?.v !== v) { this.cur = null; this.play(name); }
+      });
+      v.el.addEventListener("loadedmetadata", () => { T.found = v.tryIdx; T.loaded = T.files[v.tryIdx]; });
       if (!TRACKS[name].loop) v.el.addEventListener("ended", () => { if (this.cur === name && TRACKS[name].then) this.play(TRACKS[name].then, true); });
       this.voices[key] = v;
     }
     return this.voices[key];
   }
-  fail() { // files unavailable (offline build, blocked) → the old procedural tune keeps the game musical
+  fail(reason = "unknown") { // files unavailable (offline build, blocked) → the old procedural tune keeps the game musical
     if (this.failed) return;
-    this.failed = true; for (const v of Object.values(this.voices)) v.el.pause();
+    this.failed = true; this.status = "fallback"; this.error = reason;
+    for (const v of Object.values(this.voices)) v.el.pause();
+    console.warn(`[soundtrack] recorded music unavailable — ${reason}. Expected files in ${BASE}. Playing the built-in tune instead.`);
+    if (location.protocol === "file:") console.warn("[soundtrack] the page is opened from file:// — serve the folder over http (e.g. `npx serve` or `python -m http.server`).");
     proceduralMusic(true);
+    if (this.onFallback) this.onFallback(reason);
   }
 
   /** Switch to a track; restart = play from the top even if it is already playing (new Age).
@@ -90,7 +112,7 @@ export class Soundtrack {
       const prev = this.active;                             // (may be a loop twin started meanwhile)
       v.fade(1, prev ? XFADE : 0.6);
       if (prev && prev.v !== v) { prev.v.fade(0, XFADE); const ov = prev.v; setTimeout(() => { if (!this.active || this.active.v !== ov) ov.el.pause(); }, XFADE * 1000 + 100); }
-      this.active = { name, slot, v };
+      this.active = { name, slot, v }; this.status = "playing";
       if (TRACKS[name].loop) this.voice(name, slot === "a" ? "b" : "a").el.load(); // buffer the loop twin now
     }).catch(() => { if (token === this.seq) this.cur = old ? old.name : null; }); // autoplay blocked: kick() retries
   }

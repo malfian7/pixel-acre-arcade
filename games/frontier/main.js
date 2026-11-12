@@ -18,8 +18,12 @@ import { ICON } from "./ui/icons.js";
 import { CARDS_JSON, CARDS, DECK_SIZE } from "./data/cards.js";
 import { validateDeck } from "./sim/economy/shipments.js";
 import * as A from "./audio/audio.js";
-import { Soundtrack } from "./audio/soundtrack.js";
+import { Soundtrack, TRACKS } from "./audio/soundtrack.js";
 const OST = new Soundtrack(); // menu / exploration / ages / war / victory music (audio/soundtrack.js)
+// Build stamp: shown in Settings and the console, so a stale (cached / older) copy is easy to spot.
+export const BUILD = "2026-11-12";
+console.info(`Frontier Crown build ${BUILD}`);
+OST.onFallback = () => { if (hud && !attract) hud.notify("Soundtrack files could not be loaded — playing the built-in tune (see Settings)"); };
 
 const ARCADE = !window.CC_STANDALONE;
 const Q = PA.params, THUMB = PA.THUMB, AUTO = Q.has("auto"), PROF = Q.has("prof");
@@ -296,6 +300,7 @@ function settingsMenu(back) {
       <label class="lbl">Camera keys</label><div class="segs">${seg("camKeys", [["arrows", "Arrows"], ["wasd", "WASD + Arrows"]])}</div>
       <label class="lbl">Edge scrolling</label><div class="segs">${seg("edge", [[1, "On"], [0, "Off"]])}</div>
       <p class="hint">Graphics changes apply to the next match (Low turns off shadows). With WASD camera keys, hold <b>Alt</b> for the command card's W, A, S and D.</p>
+      <p class="hint">Build ${BUILD} · Music: ${OST.status === "fallback" ? `built-in tune — recorded soundtrack not loaded (${OST.error})` : OST.status === "playing" ? `recorded soundtrack (${Object.values(TRACKS).map((t) => t.loaded).filter(Boolean).join(", ") || "loading"})` : "recorded soundtrack (starts after your first click)"}</p>
       <div class="row"><button class="mi" data-a="back">Back</button></div>
     </div>`);
   on("[data-k]", (e) => {
